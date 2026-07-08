@@ -10,6 +10,8 @@ interface IngestArgs {
   benchmark?: string
   runId: string
   force?: boolean
+  limit?: number
+  questionId?: string
 }
 
 function generateRunId(): string {
@@ -30,6 +32,10 @@ export function parseIngestArgs(args: string[]): IngestArgs | null {
       parsed.benchmark = args[++i]
     } else if (arg === "-r" || arg === "--run-id") {
       parsed.runId = args[++i]
+    } else if (arg === "-l" || arg === "--limit") {
+      parsed.limit = parseInt(args[++i], 10)
+    } else if (arg === "-q" || arg === "--question-id") {
+      parsed.questionId = args[++i]
     } else if (arg === "--force") {
       parsed.force = true
     }
@@ -53,15 +59,22 @@ export async function ingestCommand(args: string[]): Promise<void> {
   if (!parsed) {
     console.log("Usage:")
     console.log(
-      "  New run:      bun run src/index.ts ingest -p <provider> -b <benchmark> [-r <runId>] [--force]"
+      "  New run:      bun run src/index.ts ingest -p <provider> -b <benchmark> [-r <runId>] [-l <limit> | -q <questionId>] [--force]"
     )
     console.log("  Continue run: bun run src/index.ts ingest -r <runId>")
     console.log("")
     console.log("Options:")
-    console.log(`  -p, --provider   Provider: ${getAvailableProviders().join(", ")}`)
-    console.log(`  -b, --benchmark  Benchmark: ${getAvailableBenchmarks().join(", ")}`)
-    console.log("  -r, --run-id     Run identifier")
-    console.log("  --force          Clear existing checkpoint and start fresh")
+    console.log(`  -p, --provider    Provider: ${getAvailableProviders().join(", ")}`)
+    console.log(`  -b, --benchmark   Benchmark: ${getAvailableBenchmarks().join(", ")}`)
+    console.log("  -r, --run-id      Run identifier")
+    console.log("  -l, --limit       Limit number of questions for a new run")
+    console.log("  -q, --question-id Ingest a specific question for a new run")
+    console.log("  --force           Clear existing checkpoint and start fresh")
+    return
+  }
+
+  if (parsed.limit && parsed.questionId) {
+    logger.error("Use either --limit or --question-id, not both")
     return
   }
 
@@ -109,6 +122,8 @@ export async function ingestCommand(args: string[]): Promise<void> {
     provider: parsed.provider as ProviderName,
     benchmark: parsed.benchmark as BenchmarkName,
     runId: parsed.runId,
+    limit: parsed.limit,
+    questionIds: parsed.questionId ? [parsed.questionId] : undefined,
     force: parsed.force,
   })
 }
