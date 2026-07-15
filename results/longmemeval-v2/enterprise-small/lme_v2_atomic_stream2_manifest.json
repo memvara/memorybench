@@ -1,0 +1,8 @@
+{
+  "status": "submitted",
+  "containerTag": "lme-v2-enterprise-small-atomic-v1",
+  "trajectoryCount": 100,
+  "stateMemoryCount": 3358,
+  "batchCount": 34,
+  "maxContentChars": 8000
+}

@@ -1,0 +1,27 @@
+{
+  "containerTag": "lme-v2-smoke-01307e07",
+  "scope": "enterprise/workarena LongMemEval-V2 small",
+  "note": "Literal text matching in returned memories; not semantic answer judging.",
+  "top5": {
+    "questions": 211,
+    "allGoldAnswerPartsMatched": 82,
+    "matchRate": 0.3886,
+    "wholeGoldStringMatched": 75,
+    "wholeStringRate": 0.3555,
+    "errors": 0
+  },
+  "top10": {
+    "questions": 211,
+    "allGoldAnswerPartsMatched": 88,
+    "matchRate": 0.4171,
+    "wholeGoldStringMatched": 79,
+    "wholeStringRate": 0.3744,
+    "errors": 0
+  },
+  "files": {
+    "top5Results": "C:\\Users\\guptai\\desktop\\Desktop\\personal\\supermemory\\tmp\\lme_v2_enterprise_search_limit5.jsonl",
+    "top10Results": "C:\\Users\\guptai\\desktop\\Desktop\\personal\\supermemory\\tmp\\lme_v2_enterprise_search_limit10.jsonl",
+    "top5ReadableReport": "C:\\Users\\guptai\\desktop\\Desktop\\personal\\supermemory\\tmp\\lme_v2_enterprise_answer_check_limit5.json",
+    "top10ReadableReport": "C:\\Users\\guptai\\desktop\\Desktop\\personal\\supermemory\\tmp\\lme_v2_enterprise_answer_check_limit10.json"
+  }
+}
