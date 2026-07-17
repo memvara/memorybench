@@ -2,6 +2,9 @@ import type { UnifiedQuestion, UnifiedSession, QuestionTypeRegistry } from "./un
 
 export interface BenchmarkConfig {
   dataPath?: string
+  trajectoryLimit?: number
+  trajectoryDocument?: string
+  trajectoryFormat?: string
 }
 
 export interface QuestionFilter {

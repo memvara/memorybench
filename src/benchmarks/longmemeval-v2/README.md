@@ -52,6 +52,80 @@ That creates one MemoryBench checkpoint and a Supermemory container tag for the 
 <questionId>-<dataSourceRunId>
 ```
 
+## Limit trajectories while preserving haystack order
+
+Use the full official haystack while ingesting only the first ordered trajectories for each selected question:
+
+```bash
+LONGMEMEVAL_V2_TIER=small \
+bun run src/index.ts ingest \
+  -p supermemory \
+  -b longmemeval-v2 \
+  -r lme-v2-first-trajectory \
+  -q 01307e07 \
+  --trajectory-limit 1
+```
+
+`--trajectory-limit` limits trajectories, while `--limit` limits questions. The trajectory limit is saved in the checkpoint so resumed ingestion keeps the same selection.
+
+## Ingest one trajectory document at a time
+
+Use a unique run ID for each document and reuse one explicit container tag. This keeps every document independently checkpointed while accumulating them in one provider container.
+
+Start with the first trajectory's overview only:
+
+```bash
+LONGMEMEVAL_V2_TIER=small \
+bun run src/index.ts ingest \
+  -p supermemory \
+  -b longmemeval-v2 \
+  -r lme-v2-f224a4eb-overview-v1 \
+  -q 01307e07 \
+  --trajectory-limit 1 \
+  --document overview \
+  --container-tag lme-v2-f224a4eb-sequential-v1
+```
+
+Later, ingest a single state into the same container by changing the run ID and document selector while retaining the container tag:
+
+```bash
+LONGMEMEVAL_V2_TIER=small \
+bun run src/index.ts ingest \
+  -p supermemory \
+  -b longmemeval-v2 \
+  -r lme-v2-f224a4eb-state-0-v1 \
+  -q 01307e07 \
+  --trajectory-limit 1 \
+  --document state:0 \
+  --container-tag lme-v2-f224a4eb-sequential-v1
+```
+
+`--document overview` selects only the overview session. `--document state:<index>` selects only that state. With `--trajectory-limit 1` and one question, each command ingests exactly one document.
+
+## Clean trajectory payloads
+
+Use `--trajectory-format clean` to create a causally separated payload:
+
+- overview (`STATE_-1`): goal and starting context only
+- states (`STATE_0` onward): URL, action, thought, and screenshot path, without the repeated goal, final outcome, compact accessibility extraction, or raw accessibility tree
+- result (`RESULT`): the final trajectory outcome exactly once
+
+Every document carries numeric `stateIndex` metadata using its real position: overview `-1`, states `0` onward, and result after the last state. To retrieve information available before state `x`, apply a numeric metadata filter of `stateIndex <= x - 1`.
+
+Use `--trajectory-format clean-tree` for the same goal/outcome separation while including the accessibility information exactly like the raw format: a compact UI extraction plus the normally truncated accessibility-tree excerpt. This mode uses filtered writes so state `x` only receives memories sourced from state `x - 1`, waits for indexing, and then waits another 60 seconds before submitting the next document.
+
+```bash
+LONGMEMEVAL_V2_TIER=small \
+bun run src/index.ts ingest \
+  -p supermemory \
+  -b longmemeval-v2 \
+  -r lme-v2-f224a4eb-clean-v1 \
+  -q 01307e07 \
+  --trajectory-limit 1 \
+  --trajectory-format clean \
+  --container-tag test_unraw_16_07_26
+```
+
 ## Search after ingest
 
 PowerShell:
