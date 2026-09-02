@@ -3,7 +3,9 @@ import { MemvaraClient, MemvaraHttpError } from "./client"
 
 type Call = { url: string; init: RequestInit }
 
-function fakeFetch(responses: Array<{ status: number; body: unknown } | Error>) {
+function fakeFetch(
+  responses: Array<{ status: number; body: unknown; headers?: Record<string, string> } | Error>
+) {
   const calls: Call[] = []
   const impl = (async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} })
@@ -12,7 +14,7 @@ function fakeFetch(responses: Array<{ status: number; body: unknown } | Error>) 
     if (next instanceof Error) throw next
     return new Response(JSON.stringify(next.body), {
       status: next.status,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(next.headers ?? {}) },
     })
   }) as unknown as typeof fetch
   return { impl, calls }
@@ -179,5 +181,110 @@ describe("MemvaraClient", () => {
     })
     await client.health()
     expect(f.calls[0].url).toBe("http://api.test/v1/health")
+  })
+
+  test("a 429 with a Retry-After header is retried after that many seconds, then succeeds", async () => {
+    const slept: number[] = []
+    const f = fakeFetch([
+      {
+        status: 429,
+        body: { error: { code: "rate_limited", message: "x" } },
+        headers: { "Retry-After": "2" },
+      },
+      { status: 200, body: { status: "ok", memvara_version: "1" } },
+    ])
+    const client = new MemvaraClient({
+      baseUrl: "http://api.test",
+      apiKey: "k1",
+      fetchImpl: f.impl,
+      sleep: async (ms) => {
+        slept.push(ms)
+      },
+    })
+    const out = await client.health()
+    expect(out.memvara_version).toBe("1")
+    expect(f.calls).toHaveLength(2)
+    expect(slept).toEqual([2000])
+  })
+
+  test("a 429 with retry_after in the body and no header is retried after that many seconds", async () => {
+    const slept: number[] = []
+    const f = fakeFetch([
+      { status: 429, body: { error: { detail: { retry_after: 1 } } } },
+      { status: 200, body: { status: "ok", memvara_version: "1" } },
+    ])
+    const client = new MemvaraClient({
+      baseUrl: "http://api.test",
+      apiKey: "k1",
+      fetchImpl: f.impl,
+      sleep: async (ms) => {
+        slept.push(ms)
+      },
+    })
+    const out = await client.health()
+    expect(out.memvara_version).toBe("1")
+    expect(f.calls).toHaveLength(2)
+    expect(slept).toEqual([1000])
+  })
+
+  test("429s ride their own, larger budget instead of maxAttempts", async () => {
+    const f = fakeFetch([
+      { status: 429, body: { error: { code: "rate_limited", message: "x" } } },
+      { status: 429, body: { error: { code: "rate_limited", message: "x" } } },
+      { status: 429, body: { error: { code: "rate_limited", message: "x" } } },
+      { status: 200, body: { status: "ok", memvara_version: "1" } },
+    ])
+    const client = new MemvaraClient({
+      baseUrl: "http://api.test",
+      apiKey: "k1",
+      fetchImpl: f.impl,
+      maxAttempts: 2,
+      rateLimitAttempts: 4,
+      sleep: noSleep,
+    })
+    const out = await client.health()
+    expect(out.memvara_version).toBe("1")
+    expect(f.calls).toHaveLength(4)
+  })
+
+  test("a non-429 retryable status still gives up at maxAttempts", async () => {
+    const f = fakeFetch([
+      { status: 503, body: "" },
+      { status: 503, body: "" },
+    ])
+    const client = new MemvaraClient({
+      baseUrl: "http://api.test",
+      apiKey: "k1",
+      fetchImpl: f.impl,
+      maxAttempts: 2,
+      rateLimitAttempts: 10,
+      sleep: noSleep,
+    })
+    await expect(client.health()).rejects.toBeInstanceOf(MemvaraHttpError)
+    expect(f.calls).toHaveLength(2)
+  })
+
+  test("remaining reflects the RateLimit-Remaining header of the most recent response", async () => {
+    const f = fakeFetch([
+      {
+        status: 429,
+        body: { error: { code: "rate_limited", message: "x" } },
+        headers: { "RateLimit-Remaining": "5" },
+      },
+      {
+        status: 200,
+        body: { status: "ok", memvara_version: "1" },
+        headers: { "RateLimit-Remaining": "3" },
+      },
+    ])
+    const client = new MemvaraClient({
+      baseUrl: "http://api.test",
+      apiKey: "k1",
+      fetchImpl: f.impl,
+      sleep: noSleep,
+    })
+    expect(client.remaining).toBeNull()
+    await client.health()
+    expect(client.remaining).toBe(3)
   })
 })

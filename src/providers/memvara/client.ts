@@ -116,6 +116,7 @@ export interface MemvaraClientOptions {
   apiKey: string
   fetchImpl?: typeof fetch
   maxAttempts?: number
+  rateLimitAttempts?: number
   baseDelayMs?: number
   sleep?: (ms: number) => Promise<void>
 }
@@ -137,16 +138,26 @@ export class MemvaraClient {
   private readonly apiKey: string
   private readonly fetchImpl: typeof fetch
   private readonly maxAttempts: number
+  private readonly rateLimitAttempts: number
   private readonly baseDelayMs: number
   private readonly sleep: (ms: number) => Promise<void>
+  private _remaining: number | null = null
 
   constructor(opts: MemvaraClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "")
     this.apiKey = opts.apiKey
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.maxAttempts = opts.maxAttempts ?? 5
+    this.rateLimitAttempts = opts.rateLimitAttempts ?? 60
     this.baseDelayMs = opts.baseDelayMs ?? 500
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)))
+  }
+
+  /** The `RateLimit-Remaining` value from the most recent response, so a caller can pace
+   *  itself. `null` until the first response arrives. The client does not pace on this
+   *  itself — it only reports what the API last said. */
+  get remaining(): number | null {
+    return this._remaining
   }
 
   whoami(): Promise<MemvaraWhoAmI> {
@@ -202,15 +213,23 @@ export class MemvaraClient {
     }
 
     let lastError: Error | null = null
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+    // 429 gets its own, much larger budget: memvara's rate limit is a normal part of a
+    // long ingest, not a failure, so it must not eat into the small budget that non-429
+    // retryable statuses (a restart, a busy database) get.
+    let nonRateLimitAttempts = 0
+    let rateLimitAttempts = 0
+    for (;;) {
       let response: Response
       try {
         response = await this.fetchImpl(url, init)
       } catch (e) {
         lastError = e instanceof Error ? e : new Error(String(e))
-        if (attempt < this.maxAttempts) await this.sleep(this.delay(attempt))
+        nonRateLimitAttempts++
+        if (nonRateLimitAttempts >= this.maxAttempts) throw lastError
+        await this.sleep(this.delay(nonRateLimitAttempts))
         continue
       }
+      this.recordRemaining(response)
       if (response.ok) {
         return (await response.json()) as T
       }
@@ -221,19 +240,58 @@ export class MemvaraClient {
         `${method} ${path} -> ${response.status}: ${text.slice(0, 300)}`
       )
       if (!RETRYABLE.has(response.status)) throw lastError
-      if (attempt < this.maxAttempts) {
+      if (response.status === 429) {
+        rateLimitAttempts++
+        if (rateLimitAttempts >= this.rateLimitAttempts) throw lastError
+        await this.sleep(this.rateLimitDelay(response, text, rateLimitAttempts))
+      } else {
+        nonRateLimitAttempts++
+        if (nonRateLimitAttempts >= this.maxAttempts) throw lastError
         const retryAfter = Number(response.headers.get("Retry-After"))
         await this.sleep(
           Number.isFinite(retryAfter) && retryAfter > 0
             ? Math.min(retryAfter * 1000, MAX_DELAY_MS)
-            : this.delay(attempt)
+            : this.delay(nonRateLimitAttempts)
         )
       }
     }
-    throw lastError ?? new Error(`${method} ${path}: no attempts made`)
   }
 
   private delay(attempt: number): number {
     return Math.min(this.baseDelayMs * 2 ** (attempt - 1), MAX_DELAY_MS)
+  }
+
+  /** How long to wait after a 429: the server's own instruction, when it gives one,
+   *  rather than a guess. `Retry-After` first, then `error.detail.retry_after` from the
+   *  body, then the same exponential backoff as any other retryable status. */
+  private rateLimitDelay(response: Response, bodyText: string, attempt: number): number {
+    const header = Number(response.headers.get("Retry-After"))
+    if (Number.isFinite(header) && header > 0) {
+      return Math.min(header * 1000, MAX_DELAY_MS)
+    }
+    const bodyRetryAfter = this.parseRetryAfter(bodyText)
+    if (bodyRetryAfter !== null) {
+      return Math.min(bodyRetryAfter * 1000, MAX_DELAY_MS)
+    }
+    return this.delay(attempt)
+  }
+
+  private parseRetryAfter(bodyText: string): number | null {
+    try {
+      const parsed = JSON.parse(bodyText) as { error?: { detail?: { retry_after?: unknown } } }
+      const retryAfter = parsed.error?.detail?.retry_after
+      return typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  private recordRemaining(response: Response): void {
+    const header = response.headers.get("RateLimit-Remaining")
+    if (header === null) return
+    const value = Number(header)
+    if (Number.isFinite(value)) this._remaining = value
   }
 }
