@@ -55,3 +55,20 @@ Example: See `src/providers/zep/prompts.ts`
 | `supermemory` | `supermemory` | Raw JSON sessions |
 | `mem0` | `mem0ai` | v2 API with graph |
 | `zep` | `@getzep/zep-cloud` | Graph-based, custom prompts |
+| `memvara` | REST (`fetch`) | Bitemporal claims plus raw turns; per-question container tag is a memvara `user` scope; `clear` is a scope erasure |
+
+## Running memvara against a local stack
+
+memvara's REST API is memvara-cloud's compose stack. From a memvara-cloud checkout:
+
+```bash
+export MEMVARA_CORE_PATH=/path/to/agent-memory        # the core commit under test
+export MEMVARA_QUOTA_ENFORCE=0                        # a benchmark ingests far past any plan's allowance
+docker compose -f deploy/compose.yaml up -d --build
+docker compose -f deploy/compose.yaml run --rm key    # the API key the seed step minted
+```
+
+Then in this repository's `.env.local`: `MEMVARA_API_KEY=<that key>` and
+`MEMVARA_BASE_URL=http://127.0.0.1:58080`. The provider checks `/v1/whoami` and
+`/v1/health` on initialize and logs the memvara version, so a run's log names the
+engine build it measured.

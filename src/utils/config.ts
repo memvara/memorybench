@@ -3,6 +3,8 @@ export interface Config {
   supermemoryBaseUrl: string
   mem0ApiKey: string
   zepApiKey: string
+  memvaraApiKey: string
+  memvaraBaseUrl: string
   openaiApiKey: string
   anthropicApiKey: string
   googleApiKey: string
@@ -13,6 +15,8 @@ export const config: Config = {
   supermemoryBaseUrl: process.env.SUPERMEMORY_BASE_URL || "https://api.supermemory.ai",
   mem0ApiKey: process.env.MEM0_API_KEY || "",
   zepApiKey: process.env.ZEP_API_KEY || "",
+  memvaraApiKey: process.env.MEMVARA_API_KEY || "",
+  memvaraBaseUrl: process.env.MEMVARA_BASE_URL || "http://127.0.0.1:58080",
   openaiApiKey: process.env.OPENAI_API_KEY || "",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
   googleApiKey: process.env.GOOGLE_API_KEY || "",
@@ -30,6 +34,8 @@ export function getProviderConfig(provider: string): { apiKey: string; baseUrl?:
       return { apiKey: config.openaiApiKey } // Filesystem uses OpenAI for memory extraction
     case "rag":
       return { apiKey: config.openaiApiKey } // RAG provider uses OpenAI for embeddings
+    case "memvara":
+      return { apiKey: config.memvaraApiKey, baseUrl: config.memvaraBaseUrl }
     default:
       throw new Error(`Unknown provider: ${provider}`)
   }

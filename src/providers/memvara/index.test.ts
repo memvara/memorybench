@@ -1,6 +1,8 @@
 // src/providers/memvara/index.test.ts
 import { describe, expect, test } from "bun:test"
 import { MemvaraProvider } from "./index"
+import { createProvider, getAvailableProviders } from "../index"
+import { getProviderConfig } from "../../utils/config"
 import type { MemvaraClient, MemvaraAddRequest, MemvaraSearchRequest } from "./client"
 import type { UnifiedSession } from "../../types/unified"
 
@@ -264,5 +266,33 @@ describe("MemvaraProvider", () => {
     })
     await provider.clear("c")
     expect(calls.find((c) => c.method === "eraseUser")!.args).toEqual(["c"])
+  })
+})
+
+describe("registration", () => {
+  test("memvara is a known provider", () => {
+    expect(getAvailableProviders()).toContain("memvara")
+    expect(createProvider("memvara").name).toBe("memvara")
+  })
+
+  test("config reads the memvara key and base URL, with the local stack as the default URL", () => {
+    const saved = { key: process.env.MEMVARA_API_KEY, url: process.env.MEMVARA_BASE_URL }
+    process.env.MEMVARA_API_KEY = "abc"
+    delete process.env.MEMVARA_BASE_URL
+    try {
+      // config.ts reads the environment at import time, so re-import it fresh.
+      delete require.cache[require.resolve("../../utils/config")]
+      const { getProviderConfig: fresh } =
+        require("../../utils/config") as typeof import("../../utils/config")
+      expect(fresh("memvara")).toEqual({ apiKey: "abc", baseUrl: "http://127.0.0.1:58080" })
+    } finally {
+      if (saved.key !== undefined) process.env.MEMVARA_API_KEY = saved.key
+      else delete process.env.MEMVARA_API_KEY
+      if (saved.url !== undefined) process.env.MEMVARA_BASE_URL = saved.url
+    }
+  })
+
+  test("getProviderConfig knows memvara", () => {
+    expect(() => getProviderConfig("memvara")).not.toThrow()
   })
 })
