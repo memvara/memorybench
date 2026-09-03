@@ -40,6 +40,19 @@ function getEncoder(modelId: string): Tiktoken {
   return (_cl100k ??= new Tiktoken(cl100k_base))
 }
 
+/** Tokens under o200k_base -- the encoding `countTokens` uses for gpt-4o and gpt-5, and so
+ *  the one the harness reports contextTokens with for those models. Reuses this module's
+ *  cached encoder, so a caller sizing a prompt block measures it the way the report will.
+ *
+ *  The `[], []` disables js-tiktoken's special-token check, which otherwise throws on any
+ *  text containing a literal such as `<|endoftext|>`. The LongMemEval haystack contains
+ *  one, so the default would turn a sized prompt into a failed question. Counting them as
+ *  ordinary text matches python `tiktoken.encode(text, disallowed_special=())`, which is
+ *  how the offline measurements this budget is calibrated against were taken. */
+export function countO200k(text: string): number {
+  return getEncoder("gpt-4o").encode(text, [], []).length
+}
+
 function countOpenAITokens(text: string, modelId: string): number {
   try {
     const encoding = getEncoder(modelId)

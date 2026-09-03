@@ -19,9 +19,23 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:58080"
 /** What memvara is asked for on every search. `k: 30` is what the shipped providers ask
  *  their services for; the orchestrator's `limit: 10` and `threshold: 0.3` are ignored
  *  here for the same reason they ignore them, and memvara's score is not on the scale
- *  that threshold was set for. No floor: this measures the ranking as shipped. */
-const SEARCH_K = 30
+ *  that threshold was set for. No floor: this measures the ranking as shipped.
+ *
+ *  MEMVARA_SEARCH_K overrides the 30 so an arm can measure how much of the score comes
+ *  from depth of retrieval rather than from the prompt. Read at call time, not at import,
+ *  so a run can set it per arm and a test cannot leak it into the next one. */
+const DEFAULT_SEARCH_K = 30
 const SEARCH_MIN_SCORE = 0
+
+function searchK(): number {
+  const raw = process.env.MEMVARA_SEARCH_K
+  if (raw === undefined || raw === "") return DEFAULT_SEARCH_K
+  const k = Number(raw)
+  if (!Number.isInteger(k) || k <= 0) {
+    throw new Error(`MEMVARA_SEARCH_K must be a positive integer, got "${raw}"`)
+  }
+  return k
+}
 
 export class MemvaraProvider implements Provider {
   name = "memvara"
@@ -112,7 +126,7 @@ export class MemvaraProvider implements Provider {
     const client = this.ready()
     const response = await client.search(options.containerTag, {
       query,
-      k: SEARCH_K,
+      k: searchK(),
       min_score: SEARCH_MIN_SCORE,
       include_episodes: true,
     })

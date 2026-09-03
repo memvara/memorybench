@@ -296,3 +296,51 @@ describe("registration", () => {
     expect(() => getProviderConfig("memvara")).not.toThrow()
   })
 })
+
+describe("MEMVARA_SEARCH_K", () => {
+  /** Sets the knob for one call and always puts it back. The provider reads it at call
+   *  time, not at import, which is what keeps one test's arm out of the next test. */
+  async function withSearchK<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.MEMVARA_SEARCH_K
+    if (value === undefined) delete process.env.MEMVARA_SEARCH_K
+    else process.env.MEMVARA_SEARCH_K = value
+    try {
+      return await fn()
+    } finally {
+      if (saved === undefined) delete process.env.MEMVARA_SEARCH_K
+      else process.env.MEMVARA_SEARCH_K = saved
+    }
+  }
+
+  const empty = { search: async () => ({ count: 0, results: [] }) }
+
+  async function kFor(value: string | undefined): Promise<number> {
+    return withSearchK(value, async () => {
+      const { provider, calls } = await initialised(empty)
+      await provider.search("q", { containerTag: "c" })
+      const body = calls.find((c) => c.method === "search")!.args[1] as MemvaraSearchRequest
+      return body.k
+    })
+  }
+
+  test("defaults to 30 when the variable is unset or empty", async () => {
+    expect(await kFor(undefined)).toBe(30)
+    expect(await kFor("")).toBe(30)
+  })
+
+  test("asks for the number the variable names", async () => {
+    expect(await kFor("5")).toBe(5)
+    expect(await kFor("100")).toBe(100)
+  })
+
+  test("a value that is not a positive integer throws at first use and names the variable", async () => {
+    for (const bad of ["0", "-1", "abc", "2.5", " "]) {
+      await withSearchK(bad, async () => {
+        const { provider } = await initialised(empty)
+        await expect(provider.search("q", { containerTag: "c" })).rejects.toThrow(
+          /MEMVARA_SEARCH_K/
+        )
+      })
+    }
+  })
+})
