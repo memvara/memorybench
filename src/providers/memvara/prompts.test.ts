@@ -1,12 +1,17 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import {
   ASSISTANT_QUESTION_RE,
   buildMemvaraAnswerPrompt,
   renderMemvaraContext,
   wantsAssistant,
   MEMVARA_PROMPTS,
+  TURNS_HEADER,
+  TURNS_HEADER_CUT,
 } from "./prompts"
-import { countO200k } from "../../utils/tokens"
+import { countO200k, countTokens } from "../../utils/tokens"
+import { DEFAULT_ANSWERING_MODEL, getModelConfig } from "../../utils/models"
+import { logger } from "../../utils/logger"
+import { withEnv } from "./__fixtures__/with-env"
 import type { MemvaraContextItem } from "./prompts"
 
 const memory: MemvaraContextItem = {
@@ -94,26 +99,6 @@ describe("buildMemvaraAnswerPrompt", () => {
   })
 })
 
-/** Sets environment knobs for one call and always puts them back, so an arm switched on
- *  in one test cannot leak into the next. The provider reads them at call time, which is
- *  what makes this enough. */
-function withEnv<T>(vars: Record<string, string | undefined>, fn: () => T): T {
-  const saved = new Map<string, string | undefined>()
-  for (const [name, value] of Object.entries(vars)) {
-    saved.set(name, process.env[name])
-    if (value === undefined) delete process.env[name]
-    else process.env[name] = value
-  }
-  try {
-    return fn()
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name]
-      else process.env[name] = value
-    }
-  }
-}
-
 const ALL_KNOBS_OFF = {
   MEMVARA_TURNS_ONLY: undefined,
   MEMVARA_HEAD_WHOLE: undefined,
@@ -158,6 +143,24 @@ describe("defaults", () => {
         MEMVARA_TAIL_CHARS: "",
         MEMVARA_ROLE_SELECT: "",
         MEMVARA_TOKEN_BUDGET: "",
+      },
+      () => renderMemvaraContext([memory, ended, turn, assistantTurn])
+    )
+    expect(out).toBe(DEFAULT_RENDER)
+  })
+
+  test("a knob holding only whitespace is off too, and is off for every knob alike", () => {
+    // `MEMVARA_TAIL_CHARS="$UNSET_VAR "` is how whitespace gets in. The knobs used to
+    // disagree about it -- the truncation pair treated it as off, the budget and the search
+    // depth threw -- so the same run script was an arm under one knob and a crash under
+    // another. One rule now: nothing but whitespace means the knob was cleared.
+    const out = withEnv(
+      {
+        MEMVARA_TURNS_ONLY: " ",
+        MEMVARA_HEAD_WHOLE: "  ",
+        MEMVARA_TAIL_CHARS: "\t",
+        MEMVARA_ROLE_SELECT: " ",
+        MEMVARA_TOKEN_BUDGET: " ",
       },
       () => renderMemvaraContext([memory, ended, turn, assistantTurn])
     )
@@ -327,6 +330,10 @@ describe("MEMVARA_ROLE_SELECT", () => {
 
 describe("MEMVARA_TOKEN_BUDGET", () => {
   const HEADER = "Conversation excerpts (verbatim, with the date they were said):"
+  test("is the header the renderer exports, spelled out here so a reword shows up as a diff", () => {
+    expect(TURNS_HEADER).toBe(HEADER)
+  })
+
   const many: MemvaraContextItem[] = [
     {
       kind: "turn",
@@ -363,7 +370,7 @@ describe("MEMVARA_TOKEN_BUDGET", () => {
   })
   const block = (n: number) => [HEADER, ...lines.slice(0, n)].join("\n")
 
-  test("counts in o200k_base, the encoding the harness reports contextTokens with", () => {
+  test("counts in o200k_base, which is what contextTokens counts for the o200k model ids", () => {
     // 13 under o200k_base, 12 under cl100k_base. Pinned so that swapping the encoder,
     // which would silently move every budget, fails here rather than in a run.
     expect(countO200k(HEADER)).toBe(13)
@@ -394,6 +401,40 @@ describe("MEMVARA_TOKEN_BUDGET", () => {
     expect(out).toBe(block(1))
   })
 
+  // Three turns of text where one character costs three tokens, which is what makes the
+  // byte bound in front of the encoder the only sound one to skip an encoding on.
+  const wide: MemvaraContextItem[] = [0, 1, 2].map((i) => ({
+    kind: "turn",
+    role: "user",
+    content: "ᾧ".repeat(60),
+    ts: `2023-05-2${i}T05:00:00+00:00`,
+    score: 0.9 - i / 10,
+  }))
+  const wideLines = wide.map((t) => {
+    const turnItem = t as Extract<MemvaraContextItem, { kind: "turn" }>
+    return `- [${turnItem.ts.slice(0, 10)} ${turnItem.ts.slice(11, 16)}] ${turnItem.role}: ${turnItem.content}`
+  })
+  const wideBlock = (n: number) => [HEADER, ...wideLines.slice(0, n)].join("\n")
+
+  test("skips an encoding on a byte count, because a character bounds nothing", () => {
+    // Every o200k_base token spends at least one UTF-8 byte, so bytes are an upper bound on
+    // tokens and a block that fits by bytes cannot fail by tokens. Characters bound nothing
+    // at all: "ᾧ" is one character, three bytes and three tokens, so this text saturates the
+    // byte bound and breaks the character one. Two of these turns under the header come to
+    // 239 characters and 406 tokens, so a guard that measured characters would wave the
+    // second turn through at a 240-token budget and render a block two thirds over it.
+    const budget = 240
+    expect(countO200k("ᾧ")).toBe(3)
+    expect(wideBlock(2).length).toBeLessThanOrEqual(budget)
+    expect(countO200k(wideBlock(2))).toBeGreaterThan(budget)
+
+    const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TOKEN_BUDGET: String(budget) }, () =>
+      renderMemvaraContext(wide)
+    )
+    expect(out).toBe(wideBlock(1))
+    expect(countO200k(out)).toBeLessThanOrEqual(budget)
+  })
+
   test("never re-sorts: the turns stay in the order memvara returned them", () => {
     const out = withEnv(
       { ...ALL_KNOBS_OFF, MEMVARA_TOKEN_BUDGET: String(countO200k(block(3))) },
@@ -422,7 +463,7 @@ describe("MEMVARA_TOKEN_BUDGET", () => {
   })
 
   test("composes with truncation: a shorter line is a cheaper line, so more turns fit", () => {
-    const budget = String(countO200k(block(2)))
+    const budget = String(countO200k(block(3)))
     const whole = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TOKEN_BUDGET: budget }, () =>
       renderMemvaraContext(many)
     )
@@ -430,13 +471,29 @@ describe("MEMVARA_TOKEN_BUDGET", () => {
       { ...ALL_KNOBS_OFF, MEMVARA_TOKEN_BUDGET: budget, MEMVARA_TAIL_CHARS: "12" },
       () => renderMemvaraContext(many)
     )
-    expect(whole.split("\n").length).toBe(3)
-    expect(cut.split("\n").length).toBeGreaterThan(whole.split("\n").length)
+    expect(whole.split("\n").length).toBe(4)
+    expect(cut.split("\n").length).toBe(5)
     expect(cut).toContain("…")
   })
 
+  test("the header a cut block gets is part of what the budget pays for", () => {
+    // It is five tokens dearer than the verbatim one, so a budget tight enough to be
+    // decided by five tokens keeps one fewer turn once anything is cut. Truncation still
+    // buys more turns than it costs -- the test above -- but not at every budget, and the
+    // arithmetic is the header's as much as the lines'.
+    expect(countO200k(TURNS_HEADER)).toBe(13)
+    expect(countO200k(TURNS_HEADER_CUT)).toBe(18)
+    const budget = String(countO200k(block(2)))
+    const cut = withEnv(
+      { ...ALL_KNOBS_OFF, MEMVARA_TOKEN_BUDGET: budget, MEMVARA_TAIL_CHARS: "12" },
+      () => renderMemvaraContext(many)
+    )
+    expect(cut.split("\n")[0]).toBe(TURNS_HEADER_CUT)
+    expect(cut.split("\n").length).toBe(3)
+  })
+
   test("a value that is not a positive integer throws and names the variable", () => {
-    for (const bad of ["0", "-5", "abc", "1.5", "1e", " "]) {
+    for (const bad of ["0", "-5", "abc", "1.5", "1e"]) {
       expect(() =>
         withEnv({ MEMVARA_TOKEN_BUDGET: bad }, () => renderMemvaraContext([turn]))
       ).toThrow(/MEMVARA_TOKEN_BUDGET/)
@@ -464,7 +521,7 @@ describe("MEMVARA_TOKEN_BUDGET", () => {
 
 describe("MEMVARA_HEAD_WHOLE and MEMVARA_TAIL_CHARS", () => {
   test("unset, blank or zero leaves every turn whole", () => {
-    for (const off of [undefined, "", "0"]) {
+    for (const off of [undefined, "", " ", "0"]) {
       const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TAIL_CHARS: off }, () =>
         renderMemvaraContext([memory, ended, turn, assistantTurn])
       )
@@ -485,5 +542,163 @@ describe("MEMVARA_HEAD_WHOLE and MEMVARA_TAIL_CHARS", () => {
         )
       ).toThrow(/MEMVARA_HEAD_WHOLE/)
     }
+  })
+})
+
+describe("the turns header", () => {
+  const long: MemvaraContextItem = {
+    kind: "turn",
+    role: "user",
+    content: "a".repeat(200),
+    ts: "2023-05-20T05:00:00+00:00",
+    score: 0.9,
+  }
+  const second: MemvaraContextItem = { ...long, content: "b".repeat(200), score: 0.8 }
+
+  test("promises verbatim text only while the block really is verbatim", () => {
+    const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TAIL_CHARS: "1000" }, () =>
+      renderMemvaraContext([long, second])
+    )
+    expect(out.split("\n")[0]).toBe(TURNS_HEADER)
+    expect(out).not.toContain("…")
+  })
+
+  test("says some turns were cut when any rendered turn was cut", () => {
+    // A header promising verbatim text above a line ending in an ellipsis tells the reader
+    // the ellipsis is something the speaker typed, and the reader here is the model being
+    // asked to answer from it.
+    const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TAIL_CHARS: "10" }, () =>
+      renderMemvaraContext([long, second])
+    )
+    expect(out.split("\n")[0]).toBe(TURNS_HEADER_CUT)
+    expect(TURNS_HEADER_CUT).toBe(
+      "Conversation excerpts (with the date they were said; some cut short, marked with …):"
+    )
+    expect(out).toContain(`user: ${"a".repeat(10)}…`)
+  })
+
+  test("stays verbatim when the only cut turns are the ones the budget dropped", () => {
+    const whole = withEnv(
+      { ...ALL_KNOBS_OFF, MEMVARA_HEAD_WHOLE: "1", MEMVARA_TAIL_CHARS: "10" },
+      () => renderMemvaraContext([long])
+    )
+    const out = withEnv(
+      {
+        ...ALL_KNOBS_OFF,
+        MEMVARA_HEAD_WHOLE: "1",
+        MEMVARA_TAIL_CHARS: "10",
+        MEMVARA_TOKEN_BUDGET: String(countO200k(whole)),
+      },
+      () => renderMemvaraContext([long, second])
+    )
+    expect(out).toBe(whole)
+    expect(out.split("\n")[0]).toBe(TURNS_HEADER)
+    expect(out).not.toContain("…")
+  })
+})
+
+describe("MEMVARA_TURNS_ONLY", () => {
+  test('"1" drops the claims and leaves the turns and their order alone', () => {
+    const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TURNS_ONLY: "1" }, () =>
+      renderMemvaraContext([memory, ended, turn, assistantTurn])
+    )
+    expect(out).toBe(
+      [
+        TURNS_HEADER,
+        "- [2023-05-20 02:21] user: I moved to Lisbon last week!",
+        "- [2023-05-20 02:22] assistant: I suggested the Bairro Alto Hotel.",
+      ].join("\n")
+    )
+  })
+
+  test("any value other than 1 throws and names the variable", () => {
+    // It used to compare the raw value to "1" and treat everything else as off, so
+    // MEMVARA_TURNS_ONLY=true ran the control while reading, to whoever wrote the run
+    // script, as the arm.
+    for (const bad of ["0", "true", "yes", "on", "TRUE"]) {
+      expect(() =>
+        withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TURNS_ONLY: bad }, () => renderMemvaraContext([turn]))
+      ).toThrow(/MEMVARA_TURNS_ONLY/)
+    }
+  })
+})
+
+describe("a role selection that empties the block", () => {
+  const longQuestion = `Remind me which airline I flew to Tokyo with, and whether ${"x".repeat(80)}`
+
+  function captureWarnings<T>(fn: () => T): { out: T; warnings: string[] } {
+    const warnings: string[] = []
+    const spy = spyOn(logger, "warn").mockImplementation((message: string) => {
+      warnings.push(message)
+    })
+    try {
+      return { out: fn(), warnings }
+    } finally {
+      spy.mockRestore()
+    }
+  }
+
+  test("warns, naming the knob and the first 60 characters of the question", () => {
+    const { out, warnings } = captureWarnings(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ROLE_SELECT: "route" }, () =>
+        renderMemvaraContext([turn], longQuestion)
+      )
+    )
+    // The prompt is unchanged: this says what happened, it does not repair it.
+    expect(out).toBe("No memories were retrieved.")
+    expect(warnings.length).toBe(1)
+    expect(warnings[0]).toContain("MEMVARA_ROLE_SELECT=route")
+    expect(warnings[0]).toContain(longQuestion.slice(0, 60))
+    expect(warnings[0]).not.toContain(longQuestion.slice(0, 61))
+  })
+
+  test("says nothing when turns survive the selection, or when none were retrieved", () => {
+    const kept = captureWarnings(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ROLE_SELECT: "user" }, () =>
+        renderMemvaraContext([turn, assistantTurn], "Where do I live?")
+      )
+    )
+    expect(kept.warnings).toEqual([])
+    const nothing = captureWarnings(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ROLE_SELECT: "user" }, () =>
+        renderMemvaraContext([memory], "Where do I live?")
+      )
+    )
+    expect(nothing.warnings).toEqual([])
+  })
+})
+
+describe("both truncation knobs are validated whenever either is set", () => {
+  test("MEMVARA_HEAD_WHOLE throws on its own, with MEMVARA_TAIL_CHARS unset", () => {
+    // The typo used to be reachable only through the other knob: head_whole was read
+    // inside the branch tail_chars > 0, so `MEMVARA_HEAD_WHOLE=80O` alone rendered the
+    // control in silence.
+    expect(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_HEAD_WHOLE: "80O" }, () =>
+        renderMemvaraContext([turn, assistantTurn])
+      )
+    ).toThrow(/MEMVARA_HEAD_WHOLE/)
+  })
+
+  test("MEMVARA_TAIL_CHARS throws with MEMVARA_HEAD_WHOLE unset", () => {
+    expect(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TAIL_CHARS: "80O" }, () =>
+        renderMemvaraContext([turn, assistantTurn])
+      )
+    ).toThrow(/MEMVARA_TAIL_CHARS/)
+  })
+})
+
+describe("the budget and the reported contextTokens", () => {
+  test("count a turn carrying a tokenizer literal the same way, rather than one estimating", () => {
+    // countO200k sizes the budget with the special-token check off; countTokens used to
+    // encode with it on, throw on this string, and fall back to chars/4. A block sized in
+    // real tokens was then reported in an estimate that had nothing to do with it.
+    const text = `- [2023-05-20 05:00] assistant: ... Skipped 1 messages<|endoftext|> ${"and the rest of it ".repeat(20)}`
+    // Against the model the harness actually answers with, so the assertion is about the
+    // pair the report puts side by side rather than about an encoder chosen here.
+    const counted = countTokens(text, getModelConfig(DEFAULT_ANSWERING_MODEL))
+    expect(counted).toBe(countO200k(text))
+    expect(counted).not.toBe(Math.ceil(text.length / 4))
   })
 })

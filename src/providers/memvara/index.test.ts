@@ -1,10 +1,25 @@
 // src/providers/memvara/index.test.ts
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { MemvaraProvider } from "./index"
 import { createProvider, getAvailableProviders } from "../index"
 import { getProviderConfig } from "../../utils/config"
+import { logger } from "../../utils/logger"
+import { withEnvAsync } from "./__fixtures__/with-env"
 import type { MemvaraClient, MemvaraAddRequest, MemvaraSearchRequest } from "./client"
 import type { UnifiedSession } from "../../types/unified"
+
+/** Every knob cleared. A test that asserts what the provider asks memvara for has to say
+ *  so: with MEMVARA_SEARCH_K exported in the shell -- which is exactly how an arm is run --
+ *  an unguarded `k: 30` asserts the arm's value and passes for the wrong reason, or fails
+ *  for one. */
+const ALL_KNOBS_OFF = {
+  MEMVARA_SEARCH_K: undefined,
+  MEMVARA_TURNS_ONLY: undefined,
+  MEMVARA_ROLE_SELECT: undefined,
+  MEMVARA_HEAD_WHOLE: undefined,
+  MEMVARA_TAIL_CHARS: undefined,
+  MEMVARA_TOKEN_BUDGET: undefined,
+}
 
 type Recorded = { method: string; args: unknown[] }
 
@@ -181,77 +196,87 @@ describe("MemvaraProvider", () => {
   })
 
   test("search asks for 30 with episodes and no floor, and returns plain memory and turn objects in order", async () => {
-    const { provider, calls } = await initialised({
-      search: async () => ({
-        count: 2,
-        results: [
-          {
-            kind: "claim",
-            score: 0.61,
-            ranking: {},
-            memory: {
-              id: "cl_1",
-              text: "user lives in Lisbon",
-              subject: "user",
-              predicate: "lives_in",
-              object: "Lisbon",
-              memory_type: "semantic",
-              state: "live",
-              valid_time: { valid_from: "2023-05-20T02:21:00+00:00", valid_to: null },
-              transaction_time: { recorded_at: "2023-05-20T02:21:00+00:00", invalidated_at: null },
-              confidence: 1,
-              salience: 1,
-              source_ids: ["ep_a"],
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider, calls } = await initialised({
+        search: async () => ({
+          count: 2,
+          results: [
+            {
+              kind: "claim",
+              score: 0.61,
+              ranking: {},
+              memory: {
+                id: "cl_1",
+                text: "user lives in Lisbon",
+                subject: "user",
+                predicate: "lives_in",
+                object: "Lisbon",
+                memory_type: "semantic",
+                state: "live",
+                valid_time: { valid_from: "2023-05-20T02:21:00+00:00", valid_to: null },
+                transaction_time: {
+                  recorded_at: "2023-05-20T02:21:00+00:00",
+                  invalidated_at: null,
+                },
+                confidence: 1,
+                salience: 1,
+                source_ids: ["ep_a"],
+              },
             },
-          },
-          {
-            kind: "episode",
-            score: 0.44,
-            ranking: {},
-            episode: {
-              id: "ep_a",
-              role: "user",
-              ts: "2023-05-20T02:21:00+00:00",
-              content: "I moved to Lisbon last week!",
+            {
+              kind: "episode",
+              score: 0.44,
+              ranking: {},
+              episode: {
+                id: "ep_a",
+                role: "user",
+                ts: "2023-05-20T02:21:00+00:00",
+                content: "I moved to Lisbon last week!",
+              },
             },
-          },
-        ],
-      }),
+          ],
+        }),
+      })
+      const out = await provider.search("where do I live", {
+        containerTag: "q1-run7",
+        limit: 10,
+        threshold: 0.3,
+      })
+      const [user, body] = calls.find((c) => c.method === "search")!.args as [
+        string,
+        MemvaraSearchRequest,
+      ]
+      expect(user).toBe("q1-run7")
+      expect(body).toEqual({
+        query: "where do I live",
+        k: 30,
+        min_score: 0,
+        include_episodes: true,
+      })
+      expect(out).toEqual([
+        {
+          kind: "memory",
+          text: "user lives in Lisbon",
+          subject: "user",
+          predicate: "lives_in",
+          object: "Lisbon",
+          state: "live",
+          valid_from: "2023-05-20T02:21:00+00:00",
+          valid_to: null,
+          recorded_at: "2023-05-20T02:21:00+00:00",
+          invalidated_at: null,
+          score: 0.61,
+          sources: ["ep_a"],
+        },
+        {
+          kind: "turn",
+          role: "user",
+          content: "I moved to Lisbon last week!",
+          ts: "2023-05-20T02:21:00+00:00",
+          score: 0.44,
+        },
+      ])
     })
-    const out = await provider.search("where do I live", {
-      containerTag: "q1-run7",
-      limit: 10,
-      threshold: 0.3,
-    })
-    const [user, body] = calls.find((c) => c.method === "search")!.args as [
-      string,
-      MemvaraSearchRequest,
-    ]
-    expect(user).toBe("q1-run7")
-    expect(body).toEqual({ query: "where do I live", k: 30, min_score: 0, include_episodes: true })
-    expect(out).toEqual([
-      {
-        kind: "memory",
-        text: "user lives in Lisbon",
-        subject: "user",
-        predicate: "lives_in",
-        object: "Lisbon",
-        state: "live",
-        valid_from: "2023-05-20T02:21:00+00:00",
-        valid_to: null,
-        recorded_at: "2023-05-20T02:21:00+00:00",
-        invalidated_at: null,
-        score: 0.61,
-        sources: ["ep_a"],
-      },
-      {
-        kind: "turn",
-        role: "user",
-        content: "I moved to Lisbon last week!",
-        ts: "2023-05-20T02:21:00+00:00",
-        score: 0.44,
-      },
-    ])
   })
 
   test("clear erases the user scope", async () => {
@@ -298,24 +323,10 @@ describe("registration", () => {
 })
 
 describe("MEMVARA_SEARCH_K", () => {
-  /** Sets the knob for one call and always puts it back. The provider reads it at call
-   *  time, not at import, which is what keeps one test's arm out of the next test. */
-  async function withSearchK<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
-    const saved = process.env.MEMVARA_SEARCH_K
-    if (value === undefined) delete process.env.MEMVARA_SEARCH_K
-    else process.env.MEMVARA_SEARCH_K = value
-    try {
-      return await fn()
-    } finally {
-      if (saved === undefined) delete process.env.MEMVARA_SEARCH_K
-      else process.env.MEMVARA_SEARCH_K = saved
-    }
-  }
-
   const empty = { search: async () => ({ count: 0, results: [] }) }
 
   async function kFor(value: string | undefined): Promise<number> {
-    return withSearchK(value, async () => {
+    return withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_SEARCH_K: value }, async () => {
       const { provider, calls } = await initialised(empty)
       await provider.search("q", { containerTag: "c" })
       const body = calls.find((c) => c.method === "search")!.args[1] as MemvaraSearchRequest
@@ -323,9 +334,10 @@ describe("MEMVARA_SEARCH_K", () => {
     })
   }
 
-  test("defaults to 30 when the variable is unset or empty", async () => {
+  test("defaults to 30 when the variable is unset, empty or only whitespace", async () => {
     expect(await kFor(undefined)).toBe(30)
     expect(await kFor("")).toBe(30)
+    expect(await kFor(" ")).toBe(30)
   })
 
   test("asks for the number the variable names", async () => {
@@ -333,14 +345,54 @@ describe("MEMVARA_SEARCH_K", () => {
     expect(await kFor("100")).toBe(100)
   })
 
-  test("a value that is not a positive integer throws at first use and names the variable", async () => {
-    for (const bad of ["0", "-1", "abc", "2.5", " "]) {
-      await withSearchK(bad, async () => {
-        const { provider } = await initialised(empty)
-        await expect(provider.search("q", { containerTag: "c" })).rejects.toThrow(
-          /MEMVARA_SEARCH_K/
-        )
+  test("a value that is not a positive integer throws at initialize and names the variable", async () => {
+    // initialize resolves every knob for the log, so a typo stops the run before it has
+    // ingested anything rather than at the first question that happens to touch it.
+    for (const bad of ["0", "-1", "abc", "2.5"]) {
+      await withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_SEARCH_K: bad }, async () => {
+        await expect(initialised(empty)).rejects.toThrow(/MEMVARA_SEARCH_K/)
       })
     }
+  })
+
+  test("a value set after initialize still throws at the search that reads it", async () => {
+    // The knob is read at call time, not at import, which is what lets one run set it per
+    // arm -- and what makes the startup check a convenience rather than the only guard.
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised(empty)
+      process.env.MEMVARA_SEARCH_K = "abc"
+      await expect(provider.search("q", { containerTag: "c" })).rejects.toThrow(/MEMVARA_SEARCH_K/)
+    })
+  })
+})
+
+describe("the init log", () => {
+  test("carries every resolved knob, so an arm's configuration is in its own log", async () => {
+    const lines: string[] = []
+    const spy = spyOn(logger, "info").mockImplementation((message: string) => {
+      lines.push(message)
+    })
+    try {
+      await withEnvAsync(
+        {
+          ...ALL_KNOBS_OFF,
+          MEMVARA_SEARCH_K: "200",
+          MEMVARA_TURNS_ONLY: "1",
+          MEMVARA_ROLE_SELECT: "route",
+          MEMVARA_TOKEN_BUDGET: "720",
+        },
+        async () => {
+          await initialised()
+        }
+      )
+    } finally {
+      spy.mockRestore()
+    }
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain("Initialized memvara provider")
+    expect(lines[0]).toContain(
+      'settings {"turnsOnly":true,"roleSelect":"route","headWhole":0,"tailChars":0,' +
+        '"tokenBudget":720,"searchK":200}'
+    )
   })
 })

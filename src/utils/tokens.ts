@@ -53,10 +53,18 @@ export function countO200k(text: string): number {
   return getEncoder("gpt-4o").encode(text, [], []).length
 }
 
+/** Tokens under the encoding that matches the model id, which is what the report calls
+ *  contextTokens.
+ *
+ *  The `[], []` is the same disabled special-token check as `countO200k`, and for the same
+ *  text: without it a prompt containing `<|endoftext|>` throws here and falls back to
+ *  chars/4, so the block a budget sized in real tokens would be recorded in an estimate
+ *  that has nothing to do with it. The `catch` stays for everything else, where an estimate
+ *  beats failing the question. */
 function countOpenAITokens(text: string, modelId: string): number {
   try {
     const encoding = getEncoder(modelId)
-    const tokens = encoding.encode(text)
+    const tokens = encoding.encode(text, [], [])
     return tokens.length
   } catch (error) {
     return Math.ceil(text.length / 4)

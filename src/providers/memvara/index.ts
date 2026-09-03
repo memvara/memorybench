@@ -11,31 +11,17 @@ import type { UnifiedSession } from "../../types/unified"
 import { logger } from "../../utils/logger"
 import { MemvaraClient } from "./client"
 import type { MemvaraHit, MemvaraMessage } from "./client"
+import { memvaraProviderSettings, searchK } from "./env"
 import { MEMVARA_PROMPTS } from "./prompts"
 import type { MemvaraContextItem } from "./prompts"
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:58080"
 
-/** What memvara is asked for on every search. `k: 30` is what the shipped providers ask
- *  their services for; the orchestrator's `limit: 10` and `threshold: 0.3` are ignored
- *  here for the same reason they ignore them, and memvara's score is not on the scale
- *  that threshold was set for. No floor: this measures the ranking as shipped.
- *
- *  MEMVARA_SEARCH_K overrides the 30 so an arm can measure how much of the score comes
- *  from depth of retrieval rather than from the prompt. Read at call time, not at import,
- *  so a run can set it per arm and a test cannot leak it into the next one. */
-const DEFAULT_SEARCH_K = 30
+/** What memvara is asked for on every search, beyond the depth `searchK` decides. The
+ *  orchestrator's `limit: 10` and `threshold: 0.3` are ignored here for the same reason the
+ *  shipped providers ignore them, and memvara's score is not on the scale that threshold was
+ *  set for. No floor: this measures the ranking as shipped. */
 const SEARCH_MIN_SCORE = 0
-
-function searchK(): number {
-  const raw = process.env.MEMVARA_SEARCH_K
-  if (raw === undefined || raw === "") return DEFAULT_SEARCH_K
-  const k = Number(raw)
-  if (!Number.isInteger(k) || k <= 0) {
-    throw new Error(`MEMVARA_SEARCH_K must be a positive integer, got "${raw}"`)
-  }
-  return k
-}
 
 export class MemvaraProvider implements Provider {
   name = "memvara"
@@ -67,9 +53,14 @@ export class MemvaraProvider implements Provider {
     }
     const health = await client.health()
     this.client = client
+    // Every knob, in the run's own log. A score that cannot be attributed to a
+    // configuration is a run that has to be repeated, and reading them here also means a
+    // typo in any of the six throws at startup rather than at the first question that
+    // happens to touch it.
     logger.info(
       `Initialized memvara provider: ${config.baseUrl || DEFAULT_BASE_URL}, tenant ${who.scope.tenant}, ` +
-        `privilege ${who.effective_privilege}, memvara ${health.memvara_version}`
+        `privilege ${who.effective_privilege}, memvara ${health.memvara_version}, ` +
+        `settings ${JSON.stringify(memvaraProviderSettings())}`
     )
   }
 

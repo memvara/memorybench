@@ -1,5 +1,8 @@
 import type { ProviderPrompts } from "../../types/prompts"
+import { logger } from "../../utils/logger"
 import { countO200k } from "../../utils/tokens"
+import { roleSelect, tokenBudget, truncationKnobs, turnsOnly } from "./env"
+import type { RoleSelect, TruncationKnobs } from "./env"
 
 /** A memory as `MemvaraProvider.search` returns it: memvara's claim with both clocks. */
 export interface MemvaraContextMemory {
@@ -50,53 +53,22 @@ function memoryLine(m: MemvaraContextMemory): string {
   return `- [${validity}, recorded ${formatWhen(m.recorded_at)}, ${m.state}] ${m.text}`
 }
 
-/** How many of the highest-ranked turns are rendered whole, and how far the rest are cut.
- *
- *  Assistant turns are 87% of the context memvara hands over -- a median of 515 tokens
- *  against 67 for a user turn. Whether they can be dropped is not settled, because the two
- *  measurements we have disagree. The answer string appears in an assistant turn 69% of the
- *  time against 49% for user turns; against the dataset's own has_answer labels, though,
- *  842 of the 896 gold turns are user turns, and 51 of the 54 assistant gold turns belong
- *  to single-session-assistant. MEMVARA_ROLE_SELECT below is how that gets settled; these
- *  two knobs take the other route and save from inside a turn rather than by choosing
- *  different ones.
- *
- *  Measured over the 108 questions of a 199-question run whose answer text was retrieved
- *  in full: cutting every turn to 800 characters keeps 90.7% of them and saves 54% of the
- *  tokens, while keeping the top five whole and cutting the rest to 400 keeps 96.3% and
- *  saves 51%. Rank-aware wins at every token budget, which is what one would hope -- the
- *  turns most likely to hold the answer are the ones ranked highest.
- */
-/** Reads one of the two truncation knobs. Unset, empty or `0` means off. Anything else
- *  that is not a non-negative integer throws, for the same reason MEMVARA_TOKEN_BUDGET
- *  does: `MEMVARA_TAIL_CHARS=80O` coerces to NaN, every comparison against NaN is false,
- *  and the arm would then run the control under the arm's name with nothing anywhere
- *  saying so. */
-function intKnob(name: string): number {
-  const raw = process.env[name]
-  if (raw === undefined || raw.trim() === "") return 0
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n < 0) {
-    throw new Error(`${name} must be a non-negative integer, got "${raw}"`)
-  }
-  return n
+/** One turn as it will be rendered, and whether rendering it cut anything off. The flag
+ *  decides the block's header: a header promising verbatim text above a line ending in an
+ *  ellipsis tells the reader the ellipsis is something the speaker typed. */
+interface RenderedTurn {
+  line: string
+  cut: boolean
 }
 
-function headWhole(): number {
-  return intKnob("MEMVARA_HEAD_WHOLE")
-}
-
-function tailChars(): number {
-  return intKnob("MEMVARA_TAIL_CHARS")
-}
-
-function turnLine(t: MemvaraContextTurn, rank: number): string {
-  const tail = tailChars()
-  const content =
-    tail > 0 && rank >= headWhole() && t.content.length > tail
-      ? `${t.content.slice(0, tail)}…`
-      : t.content
-  return `- [${formatWhen(t.ts)}] ${t.role}: ${content}`
+function renderTurn(
+  t: MemvaraContextTurn,
+  rank: number,
+  { headWhole, tailChars }: TruncationKnobs
+): RenderedTurn {
+  const cut = tailChars > 0 && rank >= headWhole && t.content.length > tailChars
+  const content = cut ? `${t.content.slice(0, tailChars)}…` : t.content
+  return { line: `- [${formatWhen(t.ts)}] ${t.role}: ${content}`, cut }
 }
 
 /** The fourteen phrasings that ask what the assistant itself said, rather than what the
@@ -107,49 +79,55 @@ function turnLine(t: MemvaraContextTurn, rank: number): string {
 export const ASSISTANT_QUESTION_RE =
   /\b(?:you suggested|you recommended|you mentioned|you told me|you provided|you wrote|you created|did you say|can you remind me|remind me what|remind me which|remind me who|remind me how|remind me of)\b/i
 
-/** True when the question is asking about the assistant's own past output. */
+/** True when the question is asking about the assistant's own past output.
+ *
+ *  The six "remind me" phrasings were fitted on LongMemEval, where "remind me" occurs only
+ *  in questions whose answer is something the assistant said; in ordinary English they ask
+ *  about the user's own history just as readily -- "Remind me which airline I flew" wants a
+ *  user turn, and this rule sends it to the assistant ones. On another corpus that false
+ *  fire discards every user turn with no failsafe behind it, which at a small budget is the
+ *  answer thrown away rather than merely reordered. */
 export function wantsAssistant(question: string): boolean {
   return ASSISTANT_QUESTION_RE.test(question)
 }
 
-type RoleSelect = "off" | "user" | "route"
+export const TURNS_HEADER = "Conversation excerpts (verbatim, with the date they were said):"
+export const TURNS_HEADER_CUT =
+  "Conversation excerpts (with the date they were said; some cut short, marked with …):"
 
-/** MEMVARA_ROLE_SELECT chooses which turns reach the prompt. "off" is the shipped
- *  behaviour and renders every turn memvara returned. "user" keeps user turns only, which
- *  is the arm the has_answer labels argue for. "route" keeps assistant turns only when the
- *  question asks what the assistant said, and user turns otherwise. Retrieval is untouched
- *  either way: this is a rendering choice, so the ranking still decides what is available. */
-function roleSelect(): RoleSelect {
-  const raw = process.env.MEMVARA_ROLE_SELECT
-  if (raw === undefined || raw === "") return "off"
-  if (raw === "off" || raw === "user" || raw === "route") return raw
-  throw new Error(`MEMVARA_ROLE_SELECT must be "off", "user" or "route", got "${raw}"`)
+function turnsHeader(anyCut: boolean): string {
+  return anyCut ? TURNS_HEADER_CUT : TURNS_HEADER
 }
-
-/** MEMVARA_TOKEN_BUDGET caps the turns block, in o200k_base tokens -- the encoder the
- *  harness reports contextTokens with. Absent or empty means no cap. */
-function tokenBudget(): number | null {
-  const raw = process.env.MEMVARA_TOKEN_BUDGET
-  if (raw === undefined || raw === "") return null
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`MEMVARA_TOKEN_BUDGET must be a positive integer, got "${raw}"`)
-  }
-  return n
-}
-
-const TURNS_HEADER = "Conversation excerpts (verbatim, with the date they were said):"
 
 /** Fills the turns block greedily in memvara's order and stops at the first line that
  *  would push the whole block -- header included -- past the budget. The first line is
  *  always kept, even alone over budget, because a block of nothing but a header answers
  *  no question at all. Nothing is skipped over and nothing is re-sorted: a budget that
- *  reordered the turns would measure a different ranking from the one being benchmarked. */
-function fillToBudget(lines: string[], budget: number): string[] {
-  const kept: string[] = []
-  for (const line of lines) {
-    if (kept.length > 0 && countO200k([TURNS_HEADER, ...kept, line].join("\n")) > budget) break
-    kept.push(line)
+ *  reordered the turns would measure a different ranking from the one being benchmarked.
+ *
+ *  The byte check in front of the encoder is an optimisation and decides nothing. Every
+ *  o200k_base token stands for at least one UTF-8 byte, so a block's token count is never
+ *  larger than its UTF-8 byte length; when those bytes already fit the budget the encoder
+ *  cannot say otherwise and is not asked. Any block that does not fit by bytes is encoded
+ *  whole, exactly as before, because for those the answer is genuinely unknown. That is why
+ *  the bound counts bytes rather than characters: a character is not an upper bound at all
+ *  -- "ᾧ" is one character and three tokens -- while a byte is one by construction. */
+function fillToBudget(turns: RenderedTurn[], budget: number): RenderedTurn[] {
+  const kept: RenderedTurn[] = []
+  let anyCut: boolean = false
+  // UTF-8 bytes of the kept lines, each with the newline that joins it to what precedes it.
+  let bodyBytes = 0
+  for (const turn of turns) {
+    const cut: boolean = anyCut || turn.cut
+    const candidateBody = bodyBytes + 1 + Buffer.byteLength(turn.line, "utf8")
+    const candidateBytes = Buffer.byteLength(turnsHeader(cut), "utf8") + candidateBody
+    if (kept.length > 0 && candidateBytes > budget) {
+      const block = [turnsHeader(cut), ...kept.map((k) => k.line), turn.line].join("\n")
+      if (countO200k(block) > budget) break
+    }
+    kept.push(turn)
+    anyCut = cut
+    bodyBytes = candidateBody
   }
   return kept
 }
@@ -165,15 +143,13 @@ function fillToBudget(lines: string[], budget: number): string[] {
  *  `question` is only needed by the "route" arm of MEMVARA_ROLE_SELECT. A caller that
  *  omits it renders exactly what it rendered before. */
 export function renderMemvaraContext(context: unknown[], question?: string): string {
-  // MEMVARA_TURNS_ONLY drops the claims from the prompt while leaving retrieval exactly
-  // as it was. Three arms have now shown a model-ingest run scoring below the fast path
-  // while retrieving *more* turns and twice the context, which points at the claims
-  // sitting alongside them rather than at anything missing. This isolates that: same
-  // ranking, same turns, claims removed.
-  const turnsOnly = process.env.MEMVARA_TURNS_ONLY === "1"
+  const dropClaims = turnsOnly()
   const mode = roleSelect()
   const budget = tokenBudget()
-  const memories = turnsOnly ? [] : context.filter(isMemory)
+  // Read whether or not anything is truncated, so a typo in either truncation knob throws
+  // whatever the other one is set to.
+  const knobs = truncationKnobs()
+  const memories = dropClaims ? [] : context.filter(isMemory)
   const turns = selectTurns(context.filter(isTurn), mode, question)
   if (memories.length === 0 && turns.length === 0) {
     return "No memories were retrieved."
@@ -186,10 +162,10 @@ export function renderMemvaraContext(context: unknown[], question?: string): str
     )
   }
   if (turns.length > 0) {
-    const lines = turns.map((t, i) => turnLine(t, i))
-    parts.push(
-      [TURNS_HEADER, ...(budget === null ? lines : fillToBudget(lines, budget))].join("\n")
-    )
+    const rendered = turns.map((t, i) => renderTurn(t, i, knobs))
+    const kept = budget === null ? rendered : fillToBudget(rendered, budget)
+    const header = turnsHeader(kept.some((r) => r.cut))
+    parts.push([header, ...kept.map((r) => r.line)].join("\n"))
   }
   return parts.join("\n\n")
 }
@@ -201,7 +177,17 @@ function selectTurns(
 ): MemvaraContextTurn[] {
   if (mode === "off") return turns
   const keep = mode === "route" && wantsAssistant(question ?? "") ? "assistant" : "user"
-  return turns.filter((t) => t.role === keep)
+  const kept = turns.filter((t) => t.role === keep)
+  if (kept.length === 0 && turns.length > 0) {
+    // Every retrieved turn has just been thrown away by a rendering knob, and the prompt
+    // that goes out will look like a question memvara retrieved nothing for. Say which knob
+    // did it, against which question, or the run's log records only the low score.
+    logger.warn(
+      `MEMVARA_ROLE_SELECT=${mode} kept no "${keep}" turns of the ${turns.length} retrieved ` +
+        `for question: ${(question ?? "").slice(0, 60)}`
+    )
+  }
+  return kept
 }
 
 export function buildMemvaraAnswerPrompt(
