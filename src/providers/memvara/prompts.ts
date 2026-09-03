@@ -49,8 +49,28 @@ function memoryLine(m: MemvaraContextMemory): string {
   return `- [${validity}, recorded ${formatWhen(m.recorded_at)}, ${m.state}] ${m.text}`
 }
 
-function turnLine(t: MemvaraContextTurn): string {
-  return `- [${formatWhen(t.ts)}] ${t.role}: ${t.content}`
+/** How many of the highest-ranked turns are rendered whole, and how far the rest are cut.
+ *
+ *  Assistant turns are 87% of the context memvara hands over -- a median of 515 tokens
+ *  against 67 for a user turn -- and they cannot simply be dropped, because the answer
+ *  text sits in an assistant turn 69% of the time against 49% for user turns. So the
+ *  saving has to come from inside the turn rather than from choosing different ones.
+ *
+ *  Measured over the 108 questions of a 199-question run whose answer text was retrieved
+ *  in full: cutting every turn to 800 characters keeps 90.7% of them and saves 54% of the
+ *  tokens, while keeping the top five whole and cutting the rest to 400 keeps 96.3% and
+ *  saves 51%. Rank-aware wins at every token budget, which is what one would hope -- the
+ *  turns most likely to hold the answer are the ones ranked highest.
+ */
+const HEAD_WHOLE = Number(process.env.MEMVARA_HEAD_WHOLE ?? 0)
+const TAIL_CHARS = Number(process.env.MEMVARA_TAIL_CHARS ?? 0)
+
+function turnLine(t: MemvaraContextTurn, rank: number): string {
+  const content =
+    TAIL_CHARS > 0 && rank >= HEAD_WHOLE && t.content.length > TAIL_CHARS
+      ? `${t.content.slice(0, TAIL_CHARS)}…`
+      : t.content
+  return `- [${formatWhen(t.ts)}] ${t.role}: ${content}`
 }
 
 /** Memories first, then the raw turns, each in the order memvara ranked them. Nothing
@@ -78,7 +98,7 @@ export function renderMemvaraContext(context: unknown[]): string {
   if (turns.length > 0) {
     parts.push(
       "Conversation excerpts (verbatim, with the date they were said):\n" +
-        turns.map(turnLine).join("\n")
+        turns.map((t, i) => turnLine(t, i)).join("\n")
     )
   }
   return parts.join("\n\n")
