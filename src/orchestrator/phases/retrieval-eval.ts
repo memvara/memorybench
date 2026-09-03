@@ -94,7 +94,13 @@ export async function calculateRetrievalMetrics(
 ): Promise<RetrievalMetrics> {
   const resultsToEval = searchResults.slice(0, k)
 
-  if (resultsToEval.length === 0) {
+  // Skipped by default in memvara arms. hitAtK is "an LLM judged at least one returned
+  // item topically relevant", recallAtK is the identical expression, and totalRelevant is
+  // set to relevantRetrieved -- so none of these measures coverage of the evidence the
+  // question needs. LongMemEval ships answer_session_ids; coverage is computed from those
+  // offline, exactly and for free. Paying a model call for a number that misleads is worse
+  // than having no number.
+  if (process.env.SKIP_RETRIEVAL_EVAL === "1" || resultsToEval.length === 0) {
     return {
       hitAtK: 0,
       precisionAtK: 0,

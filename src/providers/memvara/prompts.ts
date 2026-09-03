@@ -57,7 +57,13 @@ function turnLine(t: MemvaraContextTurn): string {
  *  is dropped, merged or re-sorted here: this is a rendering of the ranking, and the
  *  ranking is what the benchmark measures. */
 export function renderMemvaraContext(context: unknown[]): string {
-  const memories = context.filter(isMemory)
+  // MEMVARA_TURNS_ONLY drops the claims from the prompt while leaving retrieval exactly
+  // as it was. Three arms have now shown a model-ingest run scoring below the fast path
+  // while retrieving *more* turns and twice the context, which points at the claims
+  // sitting alongside them rather than at anything missing. This isolates that: same
+  // ranking, same turns, claims removed.
+  const turnsOnly = process.env.MEMVARA_TURNS_ONLY === "1"
+  const memories = turnsOnly ? [] : context.filter(isMemory)
   const turns = context.filter(isTurn)
   if (memories.length === 0 && turns.length === 0) {
     return "No memories were retrieved."
