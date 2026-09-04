@@ -1,7 +1,15 @@
+import { readFileSync } from "fs"
 import type { ProviderPrompts } from "../../types/prompts"
 import { logger } from "../../utils/logger"
 import { countO200k } from "../../utils/tokens"
-import { answerPrompt, roleSelect, tokenBudget, truncationKnobs, turnsOnly } from "./env"
+import {
+  answerPrompt,
+  contextFile,
+  roleSelect,
+  tokenBudget,
+  truncationKnobs,
+  turnsOnly,
+} from "./env"
 import type { RoleSelect, TruncationKnobs } from "./env"
 
 /** A memory as `MemvaraProvider.search` returns it: memvara's claim with both clocks. */
@@ -132,6 +140,54 @@ function fillToBudget(turns: RenderedTurn[], budget: number): RenderedTurn[] {
   return kept
 }
 
+/** The blocks of one MEMVARA_CONTEXT_FILE, keyed by question. Read once per path and kept
+ *  for the rest of the process: every question of a run looks in the same file, and parsing
+ *  it again for each of them would read the whole file a few hundred times. Keyed by path
+ *  rather than held in a single slot, so pointing the knob somewhere else reads the file it
+ *  now points at. */
+const OVERRIDE_BLOCKS = new Map<string, Map<string, string>>()
+
+/** What both sides of the lookup are reduced to: trimmed, with every run of whitespace one
+ *  space. The question the harness passes and the same question written into the file
+ *  differ by a line break or a trailing space far more often than by a word, and a lookup
+ *  that missed on that would abandon the arm over formatting. */
+function questionKey(question: string): string {
+  return question.trim().replace(/\s+/g, " ")
+}
+
+function loadContextFile(path: string): Map<string, string> {
+  const cached = OVERRIDE_BLOCKS.get(path)
+  if (cached) return cached
+  const blocks = new Map<string, string>()
+  const lines = readFileSync(path, "utf8").split("\n")
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === "") continue
+    const row = JSON.parse(line) as { question?: unknown; block?: unknown }
+    if (typeof row.question !== "string" || typeof row.block !== "string") {
+      throw new Error(
+        `MEMVARA_CONTEXT_FILE ${path} line ${i + 1} needs a string "question" and a string "block"`
+      )
+    }
+    blocks.set(questionKey(row.question), row.block)
+  }
+  OVERRIDE_BLOCKS.set(path, blocks)
+  return blocks
+}
+
+/** The pre-rendered block for one question, or a throw. A question the file does not cover
+ *  cannot fall back to this provider's rendering: half an arm rendered one way and half the
+ *  other scores as neither, and nothing in the report would say which questions were which. */
+function overrideBlock(path: string, question: string): string {
+  const block = loadContextFile(path).get(questionKey(question))
+  if (block === undefined) {
+    throw new Error(
+      `MEMVARA_CONTEXT_FILE ${path} has no block for question: ${question.slice(0, 80)}`
+    )
+  }
+  return block
+}
+
 /** Memories first, then the raw turns, each in the order memvara ranked them. With every
  *  knob at its default nothing is dropped, merged or re-sorted here: this is a rendering
  *  of the ranking, and the ranking is what the benchmark measures.
@@ -141,8 +197,21 @@ function fillToBudget(turns: RenderedTurn[], budget: number): RenderedTurn[] {
  *  filter, and the budget measures lines as they will actually be rendered.
  *
  *  `question` is only needed by the "route" arm of MEMVARA_ROLE_SELECT. A caller that
- *  omits it renders exactly what it rendered before. */
+ *  omits it renders exactly what it rendered before.
+ *
+ *  MEMVARA_CONTEXT_FILE replaces all of it with a block rendered elsewhere, and is read
+ *  first because none of the knobs below apply to a block this code did not build.
+ *
+ *  It is skipped when `context` is empty, and that exception is what keeps the reported
+ *  contextTokens right. The harness answers each question by building this prompt twice --
+ *  once with the retrieved context and once with an empty one -- and reports the difference
+ *  in tokens as the context's cost. Overriding the empty build as well would make the two
+ *  prompts identical and record every question of the run as having cost no context. */
 export function renderMemvaraContext(context: unknown[], question?: string): string {
+  const override = contextFile()
+  if (override !== null && context.length > 0) {
+    return overrideBlock(override, question ?? "")
+  }
   const dropClaims = turnsOnly()
   const mode = roleSelect()
   const budget = tokenBudget()

@@ -12,6 +12,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_TOKEN_BUDGET: undefined,
   MEMVARA_SEARCH_K: undefined,
   MEMVARA_ANSWER_PROMPT: undefined,
+  MEMVARA_CONTEXT_FILE: undefined,
 }
 
 const OFF_SETTINGS: MemvaraSettings = {
@@ -22,6 +23,7 @@ const OFF_SETTINGS: MemvaraSettings = {
   tokenBudget: null,
   searchK: 30,
   answerPrompt: "v1",
+  contextFile: null,
 }
 
 describe("memvaraProviderSettings", () => {
@@ -48,6 +50,7 @@ describe("memvaraProviderSettings", () => {
       tokenBudget: 720,
       searchK: 200,
       answerPrompt: "v1",
+      contextFile: null,
     })
   })
 
@@ -67,9 +70,27 @@ describe("memvaraProviderSettings", () => {
     )
     expect(settings).toEqual({ ...OFF_SETTINGS, headWhole: 5, tailChars: 400 })
   })
+
+  test("reports the context file an arm rendered somewhere else, by path", () => {
+    // Which file a run answered from is not recoverable from the answers afterwards, so
+    // the path has to be in the run's own log alongside the knobs it replaces.
+    const settings = withEnv(
+      { ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: "/tmp/blocks.jsonl" },
+      memvaraProviderSettings
+    )
+    expect(settings).toEqual({ ...OFF_SETTINGS, contextFile: "/tmp/blocks.jsonl" })
+  })
+
+  test("takes the path as written, apart from the whitespace around it", () => {
+    const settings = withEnv(
+      { ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: "  /tmp/two words.jsonl\n" },
+      memvaraProviderSettings
+    )
+    expect(settings).toEqual({ ...OFF_SETTINGS, contextFile: "/tmp/two words.jsonl" })
+  })
 })
 
-describe("one off rule for all seven knobs", () => {
+describe("one off rule for all eight knobs", () => {
   test("empty and whitespace-only both mean the knob was cleared", () => {
     for (const off of ["", " ", "  ", "\t", "\n"]) {
       const settings = withEnv(
@@ -81,6 +102,7 @@ describe("one off rule for all seven knobs", () => {
           MEMVARA_TOKEN_BUDGET: off,
           MEMVARA_SEARCH_K: off,
           MEMVARA_ANSWER_PROMPT: off,
+          MEMVARA_CONTEXT_FILE: off,
         },
         memvaraProviderSettings
       )

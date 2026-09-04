@@ -1,4 +1,7 @@
-import { describe, expect, spyOn, test } from "bun:test"
+import { afterAll, describe, expect, spyOn, test } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import {
   ASSISTANT_QUESTION_RE,
   buildMemvaraAnswerPrompt,
@@ -108,6 +111,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_ROLE_SELECT: undefined,
   MEMVARA_TOKEN_BUDGET: undefined,
   MEMVARA_ANSWER_PROMPT: undefined,
+  MEMVARA_CONTEXT_FILE: undefined,
 }
 
 const assistantTurn: MemvaraContextItem = {
@@ -777,5 +781,102 @@ describe("the budget and the reported contextTokens", () => {
     const counted = countTokens(text, getModelConfig(DEFAULT_ANSWERING_MODEL))
     expect(counted).toBe(countO200k(text))
     expect(counted).not.toBe(Math.ceil(text.length / 4))
+  })
+})
+
+describe("MEMVARA_CONTEXT_FILE", () => {
+  const dir = mkdtempSync(join(tmpdir(), "memvara-context-"))
+  afterAll(() => rmSync(dir, { recursive: true, force: true }))
+
+  const CONTEXT = [memory, ended, turn, assistantTurn]
+  const QUESTION = "Which month did I sign the lease on the apartment?"
+  const BLOCK = "Rendered elsewhere:\n- the lease was signed in March 2023"
+
+  /** A file of its own for each test. The blocks of a path are read once and kept for the
+   *  process, which is what a run of a few hundred questions wants and what would otherwise
+   *  let one test answer out of another's file. */
+  function fileWith(name: string, rows: { question: string; block: string }[]): string {
+    const path = join(dir, `${name}.jsonl`)
+    writeFileSync(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n")
+    return path
+  }
+
+  test("unset, the render is the shipped text byte for byte", () => {
+    expect(withEnv(ALL_KNOBS_OFF, () => renderMemvaraContext(CONTEXT, QUESTION))).toBe(
+      DEFAULT_RENDER
+    )
+  })
+
+  test("set, the block the file gives for the question is the whole render", () => {
+    const path = fileWith("present", [
+      { question: "Where do I live?", block: "a block for another question" },
+      { question: QUESTION, block: BLOCK },
+    ])
+    const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: path }, () =>
+      renderMemvaraContext(CONTEXT, QUESTION)
+    )
+    expect(out).toBe(BLOCK)
+  })
+
+  test("no header, no claims and no knob are applied on top of it", () => {
+    // The budget of 5 tokens and the truncation to 10 characters would both be visible in
+    // the output if this provider's rendering ran at all. An arm that wrapped somebody
+    // else's block in this one's furniture would not be measuring that block.
+    const path = fileWith("verbatim", [{ question: QUESTION, block: BLOCK }])
+    const out = withEnv(
+      {
+        ...ALL_KNOBS_OFF,
+        MEMVARA_CONTEXT_FILE: path,
+        MEMVARA_ROLE_SELECT: "user",
+        MEMVARA_HEAD_WHOLE: "1",
+        MEMVARA_TAIL_CHARS: "10",
+        MEMVARA_TOKEN_BUDGET: "5",
+      },
+      () => renderMemvaraContext(CONTEXT, QUESTION)
+    )
+    expect(out).toBe(BLOCK)
+  })
+
+  test("the question matches through the whitespace that writing the file adds", () => {
+    const path = fileWith("whitespace", [
+      { question: "\n  Which month did I sign\tthe lease   on the apartment?  ", block: BLOCK },
+    ])
+    const out = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: path }, () =>
+      renderMemvaraContext(CONTEXT, "Which month did I sign  the lease\non the apartment?")
+    )
+    expect(out).toBe(BLOCK)
+  })
+
+  test("a question the file does not cover throws, naming the knob and the question", () => {
+    // Falling back to this provider's rendering for the questions the file misses would
+    // score half of one arm and half of another, with nothing in the report saying which
+    // question was which.
+    const path = fileWith("absent", [{ question: "Where do I live?", block: BLOCK }])
+    const missing = `${QUESTION} And ${"the rest of a long question ".repeat(5)}`
+    let message = ""
+    try {
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: path }, () =>
+        renderMemvaraContext(CONTEXT, missing)
+      )
+    } catch (e) {
+      message = e instanceof Error ? e.message : String(e)
+    }
+    expect(message).toContain("MEMVARA_CONTEXT_FILE")
+    expect(message).toContain(path)
+    expect(message).toContain(missing.slice(0, 80))
+    expect(message).not.toContain(missing.slice(0, 81))
+  })
+
+  test("the empty-context prompt is left alone, which is what keeps contextTokens honest", () => {
+    // The harness reports contextTokens as this prompt's size less the size of the same
+    // prompt built with an empty context. Overriding that second prompt as well would make
+    // the two identical and record every question of the run as having cost no context.
+    const path = fileWith("accounting", [{ question: QUESTION, block: BLOCK }])
+    const arm = { ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: path }
+    const base = withEnv(arm, () => buildMemvaraAnswerPrompt(QUESTION, [], "2023/06/01"))
+    const full = withEnv(arm, () => buildMemvaraAnswerPrompt(QUESTION, CONTEXT, "2023/06/01"))
+    expect(base).toContain("Retrieved context:\nNo memories were retrieved.")
+    expect(full).toContain(`Retrieved context:\n${BLOCK}\n\nHow to read the context:`)
+    expect(countO200k(full) - countO200k(base)).toBeGreaterThan(0)
   })
 })

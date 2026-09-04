@@ -20,6 +20,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_TAIL_CHARS: undefined,
   MEMVARA_TOKEN_BUDGET: undefined,
   MEMVARA_ANSWER_PROMPT: undefined,
+  MEMVARA_CONTEXT_FILE: undefined,
 }
 
 type Recorded = { method: string; args: unknown[] }
@@ -393,7 +394,7 @@ describe("the init log", () => {
     expect(lines[0]).toContain("Initialized memvara provider")
     expect(lines[0]).toContain(
       'settings {"turnsOnly":true,"roleSelect":"route","headWhole":0,"tailChars":0,' +
-        '"tokenBudget":720,"searchK":200,"answerPrompt":"v1"}'
+        '"tokenBudget":720,"searchK":200,"answerPrompt":"v1","contextFile":null}'
     )
   })
 })
