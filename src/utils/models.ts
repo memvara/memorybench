@@ -234,7 +234,26 @@ export const DEFAULT_JUDGE_MODELS: Record<string, string> = {
   google: "gemini-2.5-flash",
 }
 
+/** `OPENAI_MODEL_PREFIX` is prepended to the id sent for every OpenAI-provider model, and
+ *  to nothing else. Gateways that front several providers name models by provider —
+ *  `openai/gpt-5.4` rather than `gpt-5.4` — while the alias a run is started with, and
+ *  the alias the checkpoint records, stay what they were, so a run through a gateway is
+ *  comparable to one that went direct. Unset or empty means no prefix. Read at call time,
+ *  not import time, so a test or a run can set it after the module loads. */
+export function openaiModelPrefix(): string {
+  return process.env.OPENAI_MODEL_PREFIX ?? ""
+}
+
 export function getModelConfig(alias: string): ModelConfig {
+  const config = resolveModelConfig(alias)
+  const prefix = openaiModelPrefix()
+  if (config.provider !== "openai" || prefix === "" || config.id.startsWith(prefix)) {
+    return config
+  }
+  return { ...config, id: `${prefix}${config.id}` }
+}
+
+function resolveModelConfig(alias: string): ModelConfig {
   const lowerAlias = alias.toLowerCase()
 
   if (MODEL_CONFIGS[lowerAlias]) {
