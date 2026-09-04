@@ -4,7 +4,7 @@
  *  rather than at import, so a run can set them per arm and one test cannot leak into the
  *  next.
  *
- *  One rule covers all six: **unset, empty, or only whitespace means the knob is off**.
+ *  One rule covers all seven: **unset, empty, or only whitespace means the knob is off**.
  *  `MEMVARA_TOKEN_BUDGET=` and `MEMVARA_TOKEN_BUDGET=" "` are both a run script clearing a
  *  knob, not a request, and the four numeric knobs used to disagree about which of those
  *  two was a clear and which was an error.
@@ -120,10 +120,31 @@ export function searchK(): number {
   return envInt("MEMVARA_SEARCH_K", 1) ?? DEFAULT_SEARCH_K
 }
 
+export type AnswerPrompt = "v1" | "v2"
+
+/** MEMVARA_ANSWER_PROMPT chooses which answer prompt is built. "v1" is the shipped text,
+ *  byte for byte. "v2" keeps every line of it and adds four lines: three reading rules and
+ *  one instruction.
+ *
+ *  The four are aimed at 13 judged questions where every gold excerpt was already in the
+ *  prompt and the answer was still wrong -- so nothing about retrieval, the budget or the
+ *  rendering would have saved them. They divided into three shapes: a later excerpt
+ *  contradicting an earlier one and the earlier value being answered with; a "how many" or
+ *  "which" question answered from the first few matching excerpts or abandoned as
+ *  undeterminable; and a request for advice answered sensibly but without the user's own
+ *  stated preferences. The fourth line closes the gap where the reasoning names the right
+ *  values and the answer is "I don't know" anyway.
+ *
+ *  This is a prompt arm and nothing else: retrieval, selection, truncation and the budget
+ *  are untouched, so the two prompts see exactly the same context block. */
+export function answerPrompt(): AnswerPrompt {
+  return envEnum("MEMVARA_ANSWER_PROMPT", ["v1", "v2"] as const, "v1")
+}
+
 /** Every knob as this process resolved it. Logged once at provider init, so an arm's
  *  configuration is in its own log instead of in whoever launched it -- a run whose score
  *  cannot be attributed to a configuration is a run that has to be repeated. Reading them
- *  all here also means a typo in any of the six throws at startup rather than at the first
+ *  all here also means a typo in any of the seven throws at startup rather than at the first
  *  question that happens to touch it. */
 export interface MemvaraSettings {
   turnsOnly: boolean
@@ -132,6 +153,7 @@ export interface MemvaraSettings {
   tailChars: number
   tokenBudget: number | null
   searchK: number
+  answerPrompt: AnswerPrompt
 }
 
 export function memvaraProviderSettings(): MemvaraSettings {
@@ -143,5 +165,6 @@ export function memvaraProviderSettings(): MemvaraSettings {
     tailChars: truncation.tailChars,
     tokenBudget: tokenBudget(),
     searchK: searchK(),
+    answerPrompt: answerPrompt(),
   }
 }

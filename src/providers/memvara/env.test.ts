@@ -11,6 +11,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_TAIL_CHARS: undefined,
   MEMVARA_TOKEN_BUDGET: undefined,
   MEMVARA_SEARCH_K: undefined,
+  MEMVARA_ANSWER_PROMPT: undefined,
 }
 
 const OFF_SETTINGS: MemvaraSettings = {
@@ -20,6 +21,7 @@ const OFF_SETTINGS: MemvaraSettings = {
   tailChars: 0,
   tokenBudget: null,
   searchK: 30,
+  answerPrompt: "v1",
 }
 
 describe("memvaraProviderSettings", () => {
@@ -45,7 +47,17 @@ describe("memvaraProviderSettings", () => {
       tailChars: 0,
       tokenBudget: 720,
       searchK: 200,
+      answerPrompt: "v1",
     })
+  })
+
+  test("reports which answer prompt an arm asked for, so a prompt arm is in its own log", () => {
+    expect(
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ANSWER_PROMPT: "v2" }, memvaraProviderSettings)
+    ).toEqual({ ...OFF_SETTINGS, answerPrompt: "v2" })
+    expect(
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ANSWER_PROMPT: "v1" }, memvaraProviderSettings)
+    ).toEqual(OFF_SETTINGS)
   })
 
   test("reports the truncation arm, whose two knobs are read together", () => {
@@ -57,7 +69,7 @@ describe("memvaraProviderSettings", () => {
   })
 })
 
-describe("one off rule for all six knobs", () => {
+describe("one off rule for all seven knobs", () => {
   test("empty and whitespace-only both mean the knob was cleared", () => {
     for (const off of ["", " ", "  ", "\t", "\n"]) {
       const settings = withEnv(
@@ -68,6 +80,7 @@ describe("one off rule for all six knobs", () => {
           MEMVARA_TAIL_CHARS: off,
           MEMVARA_TOKEN_BUDGET: off,
           MEMVARA_SEARCH_K: off,
+          MEMVARA_ANSWER_PROMPT: off,
         },
         memvaraProviderSettings
       )
@@ -106,6 +119,7 @@ describe("a value the knob does not accept throws and names the variable", () =>
     ["MEMVARA_TAIL_CHARS", ["80O", "-1", "1.5", "1e"]],
     ["MEMVARA_TOKEN_BUDGET", ["80O", "-1", "1.5", "1e"]],
     ["MEMVARA_SEARCH_K", ["80O", "-1", "1.5", "1e"]],
+    ["MEMVARA_ANSWER_PROMPT", ["v3", "V2", "v2 ", "2", "default"]],
   ]
 
   for (const [name, bad] of cases) {

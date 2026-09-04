@@ -21,6 +21,7 @@ const ARM = {
   MEMVARA_TOKEN_BUDGET: "720",
   MEMVARA_HEAD_WHOLE: undefined,
   MEMVARA_TAIL_CHARS: undefined,
+  MEMVARA_ANSWER_PROMPT: undefined,
 }
 
 const ALL_KNOBS_OFF = {
@@ -30,6 +31,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_HEAD_WHOLE: undefined,
   MEMVARA_TAIL_CHARS: undefined,
   MEMVARA_ROLE_SELECT: undefined,
+  MEMVARA_ANSWER_PROMPT: undefined,
 }
 
 const { assistantAsking, userAsking } = ARM_FIXTURE_QUESTIONS
@@ -95,6 +97,37 @@ describe("MEMVARA_ROLE_SELECT=route and =user at a 720-token budget", () => {
     // reason the two arms render different amounts of the same retrieval.
     expect(ARM_GOLDEN_RENDERS.routeAssistantAsking.split("\n").length).toBe(2)
     expect(countO200k(ARM_GOLDEN_RENDERS.routeAssistantAsking)).toBe(447)
+  })
+})
+
+describe("MEMVARA_ANSWER_PROMPT=v1", () => {
+  test("builds the pinned prompts byte for byte, asked for by name as well as by default", () => {
+    const v1 = { MEMVARA_ANSWER_PROMPT: "v1" }
+    const route = { ...ALL_KNOBS_OFF, ...ARM, ...v1, MEMVARA_ROLE_SELECT: "route" }
+    const user = { ...ALL_KNOBS_OFF, ...ARM, ...v1, MEMVARA_ROLE_SELECT: "user" }
+    expect(
+      withEnv(route, () =>
+        buildMemvaraAnswerPrompt(assistantAsking, ARM_FIXTURE_CONTEXT, QUESTION_DATE)
+      )
+    ).toBe(ARM_GOLDEN_RENDERS.routePrompt)
+    expect(
+      withEnv(user, () => buildMemvaraAnswerPrompt(userAsking, ARM_FIXTURE_CONTEXT, QUESTION_DATE))
+    ).toBe(ARM_GOLDEN_RENDERS.userPrompt)
+    expect(
+      withEnv({ ...ALL_KNOBS_OFF, ...v1 }, () =>
+        buildMemvaraAnswerPrompt(userAsking, ARM_FIXTURE_CONTEXT, QUESTION_DATE)
+      )
+    ).toBe(ARM_GOLDEN_RENDERS.defaultPrompt)
+  })
+
+  test("v2 moves the prompt, so the pinning above is a check and not a tautology", () => {
+    const v2 = withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ANSWER_PROMPT: "v2" }, () =>
+      buildMemvaraAnswerPrompt(userAsking, ARM_FIXTURE_CONTEXT, QUESTION_DATE)
+    )
+    expect(v2).not.toBe(ARM_GOLDEN_RENDERS.defaultPrompt)
+    // The context block is what the goldens pin, and v2 leaves it alone: only the
+    // surrounding instructions differ.
+    expect(v2).toContain(ARM_GOLDEN_RENDERS.default)
   })
 })
 

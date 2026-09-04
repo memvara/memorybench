@@ -1,7 +1,7 @@
 import type { ProviderPrompts } from "../../types/prompts"
 import { logger } from "../../utils/logger"
 import { countO200k } from "../../utils/tokens"
-import { roleSelect, tokenBudget, truncationKnobs, turnsOnly } from "./env"
+import { answerPrompt, roleSelect, tokenBudget, truncationKnobs, turnsOnly } from "./env"
 import type { RoleSelect, TruncationKnobs } from "./env"
 
 /** A memory as `MemvaraProvider.search` returns it: memvara's claim with both clocks. */
@@ -190,11 +190,33 @@ function selectTurns(
   return kept
 }
 
+/** The three reading rules MEMVARA_ANSWER_PROMPT=v2 adds to "How to read the context",
+ *  each aimed at one shape of failure seen in the 13 judged questions that had every gold
+ *  excerpt in the prompt and still answered wrongly: the stale value of a fact that a later
+ *  excerpt updates, a count or a list stopped after the first few matches, and advice that
+ *  never touches what the user has said about themselves. */
+export const V2_CONTEXT_BULLETS: readonly string[] = [
+  "- When two excerpts give different values for the same fact — where something is kept, what a number is, what was decided — the excerpt with the later date is the current one. Answer with it, and mention the earlier value only if the question asks about the past.",
+  "- When the question asks how many, how much in total, or which or all of something, first list every matching item from the excerpts with its date, then count or total that list. The answer is the length or sum of the list you wrote down; do not stop at the first few or say the total cannot be determined while the list is in front of you.",
+  "- When the question asks what to choose, whether to do something, or for a recommendation, build the answer on the user's own stated preferences, constraints and situation from the excerpts, and say which stated preference each part of the advice rests on. Advice that ignores what the user has said about themselves is wrong even when it is sensible.",
+]
+
+/** The one instruction v2 adds, after the abstention rule rather than in place of it: the
+ *  failures it addresses reasoned their way to the right values and then declined to
+ *  answer, which is a different mistake from guessing. */
+export const V2_INSTRUCTION =
+  '- If your reasoning has already identified the values the answer needs, give the answer; say "I don\'t know" only when the excerpts contain nothing that bears on the question.'
+
+/** v1 is the shipped prompt byte for byte; v2 is that prompt with four lines inserted and
+ *  nothing else moved. Both read the same rendered context. */
 export function buildMemvaraAnswerPrompt(
   question: string,
   context: unknown[],
   questionDate?: string
 ): string {
+  const v2 = answerPrompt() === "v2"
+  const readingRules = v2 ? `\n${V2_CONTEXT_BULLETS.join("\n")}` : ""
+  const instruction = v2 ? `\n${V2_INSTRUCTION}` : ""
   return `You are a question-answering system with access to a memory of past conversations with the user. Answer the question from the retrieved context below.
 
 Question: ${question}
@@ -206,14 +228,14 @@ ${renderMemvaraContext(context, question)}
 How to read the context:
 - A memory is a fact the memory system extracted. "valid from" is when the fact became true in the world; "recorded" is when the system learned it. A memory marked "ended" was true for the period shown and has since been replaced; prefer the "live" memory for what is true now, and use "ended" memories for what was true earlier.
 - A conversation excerpt is what was actually said, with the date it was said. Use excerpts for details and wording that a memory summarises.
-- Resolve relative expressions such as "today", "yesterday", "last week" or "in two months" against the date of the excerpt or memory they appear in, never against the current date. Use the question date only to understand what the question is asking about.
+- Resolve relative expressions such as "today", "yesterday", "last week" or "in two months" against the date of the excerpt or memory they appear in, never against the current date. Use the question date only to understand what the question is asking about.${readingRules}
 
 Instructions:
 - Think through the problem step by step first.
 - Identify which memories and excerpts are relevant, and whether any memory has been updated by a later one.
 - If the context contains enough information, give a clear, concise answer.
 - If it does not, answer "I don't know" and say what is missing. Do not guess.
-- Base the answer only on the context above.
+- Base the answer only on the context above.${instruction}
 
 Response format:
 

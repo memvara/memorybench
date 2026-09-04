@@ -7,6 +7,8 @@ import {
   MEMVARA_PROMPTS,
   TURNS_HEADER,
   TURNS_HEADER_CUT,
+  V2_CONTEXT_BULLETS,
+  V2_INSTRUCTION,
 } from "./prompts"
 import { countO200k, countTokens } from "../../utils/tokens"
 import { DEFAULT_ANSWERING_MODEL, getModelConfig } from "../../utils/models"
@@ -105,6 +107,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_TAIL_CHARS: undefined,
   MEMVARA_ROLE_SELECT: undefined,
   MEMVARA_TOKEN_BUDGET: undefined,
+  MEMVARA_ANSWER_PROMPT: undefined,
 }
 
 const assistantTurn: MemvaraContextItem = {
@@ -186,6 +189,80 @@ describe("defaults", () => {
       )
     )
     expect(prompt).toContain(`Retrieved context:\n${DEFAULT_RENDER}\n\nHow to read the context:`)
+  })
+})
+
+describe("MEMVARA_ANSWER_PROMPT", () => {
+  const CONTEXT = [memory, ended, turn, assistantTurn]
+  const QUESTION = "How many apartments have I viewed?"
+  const build = (value: string | undefined) =>
+    withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ANSWER_PROMPT: value }, () =>
+      buildMemvaraAnswerPrompt(QUESTION, CONTEXT, "2023/06/01 (Thu) 09:00")
+    )
+
+  const ADDITIONS = [...V2_CONTEXT_BULLETS, V2_INSTRUCTION]
+
+  test("is v1 when unset, blank or whitespace, and v1 is what v2 was built from", () => {
+    const v1 = build(undefined)
+    expect(build("")).toBe(v1)
+    expect(build(" ")).toBe(v1)
+    expect(build("v1")).toBe(v1)
+    for (const line of ADDITIONS) expect(v1).not.toContain(line)
+  })
+
+  test("v2 carries each of the four additions exactly once", () => {
+    const v2 = build("v2")
+    for (const line of ADDITIONS) {
+      expect(v2.split(line).length - 1).toBe(1)
+    }
+  })
+
+  // The arms are compared against each other, so what v2 leaves alone matters as much as
+  // what it adds: strike the four inserted lines out of v2 and what remains has to be v1
+  // to the byte, or the two prompts differ somewhere nobody decided they should.
+  test("v2 is v1 with four lines inserted and nothing else touched", () => {
+    const v2 = build("v2")
+    const inserted = new Set(ADDITIONS)
+    const stripped = v2
+      .split("\n")
+      .filter((line) => !inserted.has(line))
+      .join("\n")
+    expect(stripped).toBe(build("v1"))
+  })
+
+  // The strip test above removes whole lines and rejoins them, so it is blind to an
+  // addition that landed in the wrong place: move a bullet to the top of the reading list
+  // and it still passes. Each addition was written to follow one particular line, so pin
+  // it to that line rather than to the section it sits in.
+  test("v2 inserts each addition directly after the line it was written to follow", () => {
+    const v2 = build("v2")
+    const lines = v2.split("\n")
+    const readingList = lines.indexOf("How to read the context:")
+    const lastReadingRule = lines.indexOf(
+      '- Resolve relative expressions such as "today", "yesterday", "last week" or "in two months" against the date of the excerpt or memory they appear in, never against the current date. Use the question date only to understand what the question is asking about.'
+    )
+    expect(readingList).toBeGreaterThan(-1)
+    expect(lastReadingRule).toBeGreaterThan(readingList)
+    V2_CONTEXT_BULLETS.forEach((bullet, i) => {
+      expect(lines[lastReadingRule + 1 + i]).toBe(bullet)
+    })
+    const abstention = lines.indexOf(
+      '- If it does not, answer "I don\'t know" and say what is missing. Do not guess.'
+    )
+    expect(abstention).toBeGreaterThan(lines.indexOf("Instructions:"))
+    expect(lines[abstention + 1]).toBe("- Base the answer only on the context above.")
+    expect(lines[abstention + 2]).toBe(V2_INSTRUCTION)
+  })
+
+  test("changes the prompt only, never the rendered context", () => {
+    const render = withEnv(ALL_KNOBS_OFF, () => renderMemvaraContext(CONTEXT, QUESTION))
+    expect(build("v2")).toContain(`Retrieved context:\n${render}\n\nHow to read the context:`)
+  })
+
+  test("a value that is neither v1 nor v2 throws and names the variable", () => {
+    for (const bad of ["v3", "V2", "v2 ", "2"]) {
+      expect(() => build(bad)).toThrow(/MEMVARA_ANSWER_PROMPT/)
+    }
   })
 })
 

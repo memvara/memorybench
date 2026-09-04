@@ -55,7 +55,7 @@ export class MemvaraProvider implements Provider {
     this.client = client
     // Every knob, in the run's own log. A score that cannot be attributed to a
     // configuration is a run that has to be repeated, and reading them here also means a
-    // typo in any of the six throws at startup rather than at the first question that
+    // typo in any of the seven throws at startup rather than at the first question that
     // happens to touch it.
     logger.info(
       `Initialized memvara provider: ${config.baseUrl || DEFAULT_BASE_URL}, tenant ${who.scope.tenant}, ` +
