@@ -28,13 +28,22 @@ export interface MemvaraContextMemory {
   sources: string[]
 }
 
-/** A raw conversation turn, present when the search included episodes. */
+/** A raw conversation turn, present when the search included episodes.
+ *
+ *  `selected` and `span` carry a ranked search's outcome for this turn: `true` when the
+ *  model kept it, `false` when it saw the turn and did not, and absent on a plain read or
+ *  when the search was not ranked. `span` is only ever set alongside `selected: true`.
+ *  Nothing in phase 1 renders the span or the rendering knobs read `selected` -- the
+ *  ranking is what the server already applied to the returned order -- but the offline
+ *  screen's scoring script needs the field on the turn to tell the kept set from the rest. */
 export interface MemvaraContextTurn {
   kind: "turn"
   role: string
   content: string
   ts: string
   score: number
+  selected?: boolean | null
+  span?: string | null
 }
 
 export type MemvaraContextItem = MemvaraContextMemory | MemvaraContextTurn

@@ -33,6 +33,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_ROLE_SELECT: undefined,
   MEMVARA_ANSWER_PROMPT: undefined,
   MEMVARA_CONTEXT_FILE: undefined,
+  MEMVARA_RANKED: undefined,
 }
 
 const { assistantAsking, userAsking } = ARM_FIXTURE_QUESTIONS

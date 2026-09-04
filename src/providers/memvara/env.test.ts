@@ -13,6 +13,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_SEARCH_K: undefined,
   MEMVARA_ANSWER_PROMPT: undefined,
   MEMVARA_CONTEXT_FILE: undefined,
+  MEMVARA_RANKED: undefined,
 }
 
 const OFF_SETTINGS: MemvaraSettings = {
@@ -24,6 +25,7 @@ const OFF_SETTINGS: MemvaraSettings = {
   searchK: 30,
   answerPrompt: "v1",
   contextFile: null,
+  ranked: false,
 }
 
 describe("memvaraProviderSettings", () => {
@@ -51,6 +53,14 @@ describe("memvaraProviderSettings", () => {
       searchK: 200,
       answerPrompt: "v1",
       contextFile: null,
+      ranked: false,
+    })
+  })
+
+  test("reports MEMVARA_RANKED, and the parity stack it requires", () => {
+    expect(withEnv({ ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1" }, memvaraProviderSettings)).toEqual({
+      ...OFF_SETTINGS,
+      ranked: true,
     })
   })
 
@@ -90,7 +100,42 @@ describe("memvaraProviderSettings", () => {
   })
 })
 
-describe("one off rule for all eight knobs", () => {
+describe("MEMVARA_RANKED with a stack that would hide the server's ranked order", () => {
+  // The parity run this knob drives needs the server's own order in front of the reader,
+  // unmixed with a rendering choice that could drop or replace what it kept -- so a stack
+  // that asks for both is a mistake to catch at startup, not a run to score and discard.
+  test("throws when MEMVARA_ROLE_SELECT is also set", () => {
+    expect(() =>
+      withEnv(
+        { ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1", MEMVARA_ROLE_SELECT: "route" },
+        memvaraProviderSettings
+      )
+    ).toThrow(/MEMVARA_RANKED/)
+  })
+
+  test("throws when MEMVARA_CONTEXT_FILE is also set", () => {
+    expect(() =>
+      withEnv(
+        { ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1", MEMVARA_CONTEXT_FILE: "/tmp/blocks.jsonl" },
+        memvaraProviderSettings
+      )
+    ).toThrow(/MEMVARA_RANKED/)
+  })
+
+  test("MEMVARA_ROLE_SELECT and MEMVARA_CONTEXT_FILE are each fine on their own", () => {
+    expect(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ROLE_SELECT: "route" }, memvaraProviderSettings)
+    ).not.toThrow()
+    expect(() =>
+      withEnv(
+        { ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: "/tmp/blocks.jsonl" },
+        memvaraProviderSettings
+      )
+    ).not.toThrow()
+  })
+})
+
+describe("one off rule for all nine knobs", () => {
   test("empty and whitespace-only both mean the knob was cleared", () => {
     for (const off of ["", " ", "  ", "\t", "\n"]) {
       const settings = withEnv(
@@ -103,6 +148,7 @@ describe("one off rule for all eight knobs", () => {
           MEMVARA_SEARCH_K: off,
           MEMVARA_ANSWER_PROMPT: off,
           MEMVARA_CONTEXT_FILE: off,
+          MEMVARA_RANKED: off,
         },
         memvaraProviderSettings
       )
@@ -142,6 +188,7 @@ describe("a value the knob does not accept throws and names the variable", () =>
     ["MEMVARA_TOKEN_BUDGET", ["80O", "-1", "1.5", "1e"]],
     ["MEMVARA_SEARCH_K", ["80O", "-1", "1.5", "1e"]],
     ["MEMVARA_ANSWER_PROMPT", ["v3", "V2", "v2 ", "2", "default"]],
+    ["MEMVARA_RANKED", ["0", "true", "yes"]],
   ]
 
   for (const [name, bad] of cases) {

@@ -11,7 +11,7 @@ import type { UnifiedSession } from "../../types/unified"
 import { logger } from "../../utils/logger"
 import { MemvaraClient } from "./client"
 import type { MemvaraHit, MemvaraMessage } from "./client"
-import { memvaraProviderSettings, searchK } from "./env"
+import { memvaraProviderSettings, ranked, searchK } from "./env"
 import { MEMVARA_PROMPTS } from "./prompts"
 import type { MemvaraContextItem } from "./prompts"
 
@@ -120,6 +120,7 @@ export class MemvaraProvider implements Provider {
       k: searchK(),
       min_score: SEARCH_MIN_SCORE,
       include_episodes: true,
+      ...(ranked() ? { ranked: true } : {}),
     })
     return response.results.map(toContextItem)
   }
@@ -156,7 +157,15 @@ function toContextItem(hit: MemvaraHit): MemvaraContextItem {
     }
   }
   const e = hit.episode
-  return { kind: "turn", role: e.role, content: e.content, ts: e.ts, score: hit.score }
+  return {
+    kind: "turn",
+    role: e.role,
+    content: e.content,
+    ts: e.ts,
+    score: hit.score,
+    ...(hit.ranking?.selected !== undefined ? { selected: hit.ranking.selected } : {}),
+    ...(hit.ranking?.span !== undefined ? { span: hit.ranking.span } : {}),
+  }
 }
 
 export default MemvaraProvider

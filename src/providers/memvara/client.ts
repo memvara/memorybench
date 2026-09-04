@@ -38,6 +38,15 @@ export interface MemvaraSearchRequest {
   k: number
   min_score: number
   include_episodes: boolean
+  ranked?: boolean
+}
+
+/** What a ranked search adds to one episode hit: whether the model kept the turn, and the
+ *  verbatim span it kept it for. Absent on a plain read and on a claim, since only turns
+ *  reach the selector. */
+export interface MemvaraRanking {
+  selected?: boolean | null
+  span?: string | null
 }
 
 export interface MemvaraMemory {
@@ -64,7 +73,7 @@ export interface MemvaraEpisode {
 
 export type MemvaraHit =
   | { kind: "claim"; score: number; memory: MemvaraMemory }
-  | { kind: "episode"; score: number; episode: MemvaraEpisode }
+  | { kind: "episode"; score: number; episode: MemvaraEpisode; ranking?: MemvaraRanking }
 
 export interface MemvaraSearchResponse {
   count: number

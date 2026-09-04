@@ -4,7 +4,7 @@
  *  rather than at import, so a run can set them per arm and one test cannot leak into the
  *  next.
  *
- *  One rule covers all eight: **unset, empty, or only whitespace means the knob is off**.
+ *  One rule covers all nine: **unset, empty, or only whitespace means the knob is off**.
  *  `MEMVARA_TOKEN_BUDGET=` and `MEMVARA_TOKEN_BUDGET=" "` are both a run script clearing a
  *  knob, not a request, and the four numeric knobs used to disagree about which of those
  *  two was a clear and which was an error.
@@ -62,6 +62,22 @@ export function turnsOnly(): boolean {
   if (raw === undefined || raw.trim() === "") return false
   if (raw === "1") return true
   throw new Error(`MEMVARA_TURNS_ONLY must be "1" or unset, got "${raw}"`)
+}
+
+/** MEMVARA_RANKED=1 adds `ranked: true` to the search request, asking the server to have a
+ *  model pick the turns that bear on the question instead of returning the cross-encoder's
+ *  order as-is. Same off rule as MEMVARA_TURNS_ONLY: unset is off, only `"1"` turns it on.
+ *
+ *  Two other knobs would each hide the server's ranked order from the parity run this
+ *  drives: MEMVARA_CONTEXT_FILE replaces the rendered block outright, and
+ *  MEMVARA_ROLE_SELECT drops one role from the server's kept-first list after the fact.
+ *  `memvaraProviderSettings` throws at startup if either is set alongside this one, rather
+ *  than let a run silently measure something other than the ranked read. */
+export function ranked(): boolean {
+  const raw = process.env.MEMVARA_RANKED
+  if (raw === undefined || raw.trim() === "") return false
+  if (raw === "1") return true
+  throw new Error(`MEMVARA_RANKED must be "1" or unset, got "${raw}"`)
 }
 
 export type RoleSelect = "off" | "user" | "route"
@@ -150,7 +166,7 @@ export function answerPrompt(): AnswerPrompt {
  *
  *  A path is the one knob with nothing to check it against, so it is taken as written apart
  *  from the whitespace around it. That is also why a mistyped path throws when the file is
- *  first read rather than at startup like the other seven. */
+ *  first read rather than at startup like the other eight. */
 export function contextFile(): string | null {
   const raw = process.env.MEMVARA_CONTEXT_FILE
   if (raw === undefined || raw.trim() === "") return null
@@ -160,9 +176,9 @@ export function contextFile(): string | null {
 /** Every knob as this process resolved it. Logged once at provider init, so an arm's
  *  configuration is in its own log instead of in whoever launched it -- a run whose score
  *  cannot be attributed to a configuration is a run that has to be repeated. Reading them
- *  all here also means a typo in any of the seven knobs that check their value throws at
+ *  all here also means a typo in any of the eight knobs that check their value throws at
  *  startup rather than at the first question that happens to touch it. MEMVARA_CONTEXT_FILE
- *  is the eighth and has no value to check, so the path is logged and read later. */
+ *  is the ninth and has no value to check, so the path is logged and read later. */
 export interface MemvaraSettings {
   turnsOnly: boolean
   roleSelect: RoleSelect
@@ -172,11 +188,12 @@ export interface MemvaraSettings {
   searchK: number
   answerPrompt: AnswerPrompt
   contextFile: string | null
+  ranked: boolean
 }
 
 export function memvaraProviderSettings(): MemvaraSettings {
   const truncation = truncationKnobs()
-  return {
+  const settings: MemvaraSettings = {
     turnsOnly: turnsOnly(),
     roleSelect: roleSelect(),
     headWhole: truncation.headWhole,
@@ -185,5 +202,14 @@ export function memvaraProviderSettings(): MemvaraSettings {
     searchK: searchK(),
     answerPrompt: answerPrompt(),
     contextFile: contextFile(),
+    ranked: ranked(),
   }
+  if (settings.ranked && (settings.roleSelect !== "off" || settings.contextFile !== null)) {
+    throw new Error(
+      "MEMVARA_RANKED=1 with MEMVARA_ROLE_SELECT or MEMVARA_CONTEXT_FILE set would measure " +
+        "something other than the server's ranked order: unset MEMVARA_ROLE_SELECT and " +
+        "MEMVARA_CONTEXT_FILE, or drop MEMVARA_RANKED."
+    )
+  }
+  return settings
 }
