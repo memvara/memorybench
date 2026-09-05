@@ -76,6 +76,20 @@ export function turnsOnly(): boolean {
  *  turns are kept. `memvaraProviderSettings` throws at startup if any of the three is set
  *  alongside this one, rather than let a run silently measure something other than the
  *  ranked read. */
+/** MEMVARA_NAMED_SPEAKERS=1 says the benchmark's two speakers are both people, not a person
+ *  and the model. Every turn that carries a `speaker` is then stored as a `user` turn with
+ *  the name in front of the text ("Melanie: ..."), which is what the Zep provider already
+ *  does. Without it, LoCoMo's second speaker lands as `assistant`, the role the server's
+ *  routing rule drops unless the question asks what the model said, and the turn is stored
+ *  without the name a question like "what did Melanie read" needs. Same off rule as the
+ *  other flags: unset is off, only `"1"` turns it on. */
+export function namedSpeakers(): boolean {
+  const raw = process.env.MEMVARA_NAMED_SPEAKERS
+  if (raw === undefined || raw.trim() === "") return false
+  if (raw === "1") return true
+  throw new Error(`MEMVARA_NAMED_SPEAKERS must be "1" or unset, got "${raw}"`)
+}
+
 export function ranked(): boolean {
   const raw = process.env.MEMVARA_RANKED
   if (raw === undefined || raw.trim() === "") return false
@@ -192,6 +206,7 @@ export interface MemvaraSettings {
   answerPrompt: AnswerPrompt
   contextFile: string | null
   ranked: boolean
+  namedSpeakers: boolean
 }
 
 export function memvaraProviderSettings(): MemvaraSettings {
@@ -206,6 +221,7 @@ export function memvaraProviderSettings(): MemvaraSettings {
     answerPrompt: answerPrompt(),
     contextFile: contextFile(),
     ranked: ranked(),
+    namedSpeakers: namedSpeakers(),
   }
   if (
     settings.ranked &&

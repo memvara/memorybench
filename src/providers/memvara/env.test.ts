@@ -14,6 +14,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_ANSWER_PROMPT: undefined,
   MEMVARA_CONTEXT_FILE: undefined,
   MEMVARA_RANKED: undefined,
+  MEMVARA_NAMED_SPEAKERS: undefined,
 }
 
 const OFF_SETTINGS: MemvaraSettings = {
@@ -26,6 +27,7 @@ const OFF_SETTINGS: MemvaraSettings = {
   answerPrompt: "v1",
   contextFile: null,
   ranked: false,
+  namedSpeakers: false,
 }
 
 describe("memvaraProviderSettings", () => {
@@ -54,7 +56,17 @@ describe("memvaraProviderSettings", () => {
       answerPrompt: "v1",
       contextFile: null,
       ranked: false,
+      namedSpeakers: false,
     })
+  })
+
+  test("reports MEMVARA_NAMED_SPEAKERS, and refuses any spelling but 1", () => {
+    expect(
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_NAMED_SPEAKERS: "1" }, memvaraProviderSettings)
+    ).toEqual({ ...OFF_SETTINGS, namedSpeakers: true })
+    expect(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_NAMED_SPEAKERS: "true" }, memvaraProviderSettings)
+    ).toThrow(/MEMVARA_NAMED_SPEAKERS/)
   })
 
   test("reports MEMVARA_RANKED, and the parity stack it requires", () => {

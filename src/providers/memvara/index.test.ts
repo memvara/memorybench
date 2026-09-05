@@ -22,6 +22,7 @@ const ALL_KNOBS_OFF = {
   MEMVARA_ANSWER_PROMPT: undefined,
   MEMVARA_CONTEXT_FILE: undefined,
   MEMVARA_RANKED: undefined,
+  MEMVARA_NAMED_SPEAKERS: undefined,
 }
 
 type Recorded = { method: string; args: unknown[] }
@@ -173,6 +174,40 @@ describe("MemvaraProvider", () => {
     await provider.ingest([s], { containerTag: "c" })
     const body = calls.find((c) => c.method === "addMemories")!.args[1] as MemvaraAddRequest
     expect(body.messages[0].ts).toBe("2024-01-01T00:00:00.000Z")
+  })
+
+  test("ingest stores both named speakers as user turns with the name in front, under MEMVARA_NAMED_SPEAKERS=1", async () => {
+    await withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_NAMED_SPEAKERS: "1" }, async () => {
+      const { provider, calls } = await initialised({
+        addMemories: async () => ({
+          episode_ids: ["ep_a", "ep_b"],
+          added: [],
+          invalidated: [],
+          reinforced: [],
+          skipped: 0,
+          unextracted: 0,
+          llm_calls: 0,
+          latency_ms: 1,
+          deferred: false,
+          note: null,
+        }),
+      })
+      const s: UnifiedSession = {
+        sessionId: "s",
+        messages: [
+          { role: "user", content: "I went camping.", speaker: "Caroline" },
+          { role: "assistant", content: "I read Charlotte's Web.", speaker: "Melanie" },
+          { role: "assistant", content: "Congratulations." },
+        ],
+      }
+      await provider.ingest([s], { containerTag: "c" })
+      const body = calls.find((c) => c.method === "addMemories")!.args[1] as MemvaraAddRequest
+      expect(body.messages.map((m) => [m.role, m.content])).toEqual([
+        ["user", "Caroline: I went camping."],
+        ["user", "Melanie: I read Charlotte's Web."],
+        ["assistant", "Congratulations."],
+      ])
+    })
   })
 
   test("ingest skips a session with no messages", async () => {
@@ -594,7 +629,8 @@ describe("the init log", () => {
     expect(lines[0]).toContain("Initialized memvara provider")
     expect(lines[0]).toContain(
       'settings {"turnsOnly":true,"roleSelect":"route","headWhole":0,"tailChars":0,' +
-        '"tokenBudget":720,"searchK":200,"answerPrompt":"v1","contextFile":null,"ranked":false}'
+        '"tokenBudget":720,"searchK":200,"answerPrompt":"v1","contextFile":null,"ranked":false,' +
+        '"namedSpeakers":false}'
     )
   })
 })

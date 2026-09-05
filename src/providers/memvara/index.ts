@@ -71,9 +71,10 @@ export class MemvaraProvider implements Provider {
       if (session.messages.length === 0) continue
       const sessionDate =
         typeof session.metadata?.date === "string" ? session.metadata.date : undefined
+      const named = memvaraProviderSettings().namedSpeakers
       const messages: MemvaraMessage[] = session.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
+        role: named && m.speaker ? "user" : m.role,
+        content: named && m.speaker ? `${m.speaker}: ${m.content}` : m.content,
         ...(m.timestamp || sessionDate ? { ts: m.timestamp || sessionDate } : {}),
         metadata: { sessionId: session.sessionId },
       }))
