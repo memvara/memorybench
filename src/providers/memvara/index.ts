@@ -10,17 +10,17 @@ import type {
 import type { UnifiedSession } from "../../types/unified"
 import { logger } from "../../utils/logger"
 import { MemvaraClient } from "./client"
-import type { MemvaraHit, MemvaraMessage } from "./client"
+import type { MemvaraHit, MemvaraMessage, MemvaraSelection } from "./client"
+import { memvaraProviderSettings, ranked, searchK } from "./env"
 import { MEMVARA_PROMPTS } from "./prompts"
-import type { MemvaraContextItem } from "./prompts"
+import type { MemvaraContextItem, MemvaraContextSelection } from "./prompts"
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:58080"
 
-/** What memvara is asked for on every search. `k: 30` is what the shipped providers ask
- *  their services for; the orchestrator's `limit: 10` and `threshold: 0.3` are ignored
- *  here for the same reason they ignore them, and memvara's score is not on the scale
- *  that threshold was set for. No floor: this measures the ranking as shipped. */
-const SEARCH_K = 30
+/** What memvara is asked for on every search, beyond the depth `searchK` decides. The
+ *  orchestrator's `limit: 10` and `threshold: 0.3` are ignored here for the same reason the
+ *  shipped providers ignore them, and memvara's score is not on the scale that threshold was
+ *  set for. No floor: this measures the ranking as shipped. */
 const SEARCH_MIN_SCORE = 0
 
 export class MemvaraProvider implements Provider {
@@ -53,9 +53,14 @@ export class MemvaraProvider implements Provider {
     }
     const health = await client.health()
     this.client = client
+    // Every knob, in the run's own log. A score that cannot be attributed to a
+    // configuration is a run that has to be repeated, and reading them here also means a
+    // typo in any of the knobs that check their value throws at startup rather than at the
+    // first question that happens to touch it.
     logger.info(
       `Initialized memvara provider: ${config.baseUrl || DEFAULT_BASE_URL}, tenant ${who.scope.tenant}, ` +
-        `privilege ${who.effective_privilege}, memvara ${health.memvara_version}`
+        `privilege ${who.effective_privilege}, memvara ${health.memvara_version}, ` +
+        `settings ${JSON.stringify(memvaraProviderSettings())}`
     )
   }
 
@@ -66,9 +71,10 @@ export class MemvaraProvider implements Provider {
       if (session.messages.length === 0) continue
       const sessionDate =
         typeof session.metadata?.date === "string" ? session.metadata.date : undefined
+      const named = memvaraProviderSettings().namedSpeakers
       const messages: MemvaraMessage[] = session.messages.map((m) => ({
-        role: m.role,
-        content: m.content,
+        role: named && m.speaker ? "user" : m.role,
+        content: named && m.speaker ? `${m.speaker}: ${m.content}` : m.content,
         ...(m.timestamp || sessionDate ? { ts: m.timestamp || sessionDate } : {}),
         metadata: { sessionId: session.sessionId },
       }))
@@ -112,11 +118,14 @@ export class MemvaraProvider implements Provider {
     const client = this.ready()
     const response = await client.search(options.containerTag, {
       query,
-      k: SEARCH_K,
+      k: searchK(),
       min_score: SEARCH_MIN_SCORE,
       include_episodes: true,
+      ...(ranked() ? { ranked: true } : {}),
     })
-    return response.results.map(toContextItem)
+    const items: MemvaraContextItem[] = response.results.map(toContextItem)
+    if (response.selection) items.push(toSelectionItem(response.selection))
+    return items
   }
 
   async clear(containerTag: string): Promise<void> {
@@ -151,7 +160,28 @@ function toContextItem(hit: MemvaraHit): MemvaraContextItem {
     }
   }
   const e = hit.episode
-  return { kind: "turn", role: e.role, content: e.content, ts: e.ts, score: hit.score }
+  return {
+    kind: "turn",
+    role: e.role,
+    content: e.content,
+    ts: e.ts,
+    score: hit.score,
+    ...(hit.ranking?.selected !== undefined ? { selected: hit.ranking.selected } : {}),
+    ...(hit.ranking?.span !== undefined ? { span: hit.ranking.span } : {}),
+  }
+}
+
+/** The response's own outcome, carried into the context array as one extra item -- see
+ *  `MemvaraContextSelection`. */
+function toSelectionItem(s: MemvaraSelection): MemvaraContextSelection {
+  return {
+    kind: "selection",
+    outcome: s.outcome,
+    ...(s.reason !== undefined ? { reason: s.reason } : {}),
+    ...(s.status !== undefined ? { status: s.status } : {}),
+    candidates: s.candidates,
+    kept: s.kept,
+  }
 }
 
 export default MemvaraProvider

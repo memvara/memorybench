@@ -40,10 +40,31 @@ function getEncoder(modelId: string): Tiktoken {
   return (_cl100k ??= new Tiktoken(cl100k_base))
 }
 
+/** Tokens under o200k_base -- the encoding `countTokens` uses for gpt-4o and gpt-5, and so
+ *  the one the harness reports contextTokens with for those models. Reuses this module's
+ *  cached encoder, so a caller sizing a prompt block measures it the way the report will.
+ *
+ *  The `[], []` disables js-tiktoken's special-token check, which otherwise throws on any
+ *  text containing a literal such as `<|endoftext|>`. The LongMemEval haystack contains
+ *  one, so the default would turn a sized prompt into a failed question. Counting them as
+ *  ordinary text matches python `tiktoken.encode(text, disallowed_special=())`, which is
+ *  how the offline measurements this budget is calibrated against were taken. */
+export function countO200k(text: string): number {
+  return getEncoder("gpt-4o").encode(text, [], []).length
+}
+
+/** Tokens under the encoding that matches the model id, which is what the report calls
+ *  contextTokens.
+ *
+ *  The `[], []` is the same disabled special-token check as `countO200k`, and for the same
+ *  text: without it a prompt containing `<|endoftext|>` throws here and falls back to
+ *  chars/4, so the block a budget sized in real tokens would be recorded in an estimate
+ *  that has nothing to do with it. The `catch` stays for everything else, where an estimate
+ *  beats failing the question. */
 function countOpenAITokens(text: string, modelId: string): number {
   try {
     const encoding = getEncoder(modelId)
-    const tokens = encoding.encode(text)
+    const tokens = encoding.encode(text, [], [])
     return tokens.length
   } catch (error) {
     return Math.ceil(text.length / 4)

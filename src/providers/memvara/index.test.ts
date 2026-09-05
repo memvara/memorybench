@@ -1,10 +1,29 @@
 // src/providers/memvara/index.test.ts
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { MemvaraProvider } from "./index"
 import { createProvider, getAvailableProviders } from "../index"
 import { getProviderConfig } from "../../utils/config"
+import { logger } from "../../utils/logger"
+import { withEnvAsync } from "./__fixtures__/with-env"
 import type { MemvaraClient, MemvaraAddRequest, MemvaraSearchRequest } from "./client"
 import type { UnifiedSession } from "../../types/unified"
+
+/** Every knob cleared. A test that asserts what the provider asks memvara for has to say
+ *  so: with MEMVARA_SEARCH_K exported in the shell -- which is exactly how an arm is run --
+ *  an unguarded `k: 30` asserts the arm's value and passes for the wrong reason, or fails
+ *  for one. */
+const ALL_KNOBS_OFF = {
+  MEMVARA_SEARCH_K: undefined,
+  MEMVARA_TURNS_ONLY: undefined,
+  MEMVARA_ROLE_SELECT: undefined,
+  MEMVARA_HEAD_WHOLE: undefined,
+  MEMVARA_TAIL_CHARS: undefined,
+  MEMVARA_TOKEN_BUDGET: undefined,
+  MEMVARA_ANSWER_PROMPT: undefined,
+  MEMVARA_CONTEXT_FILE: undefined,
+  MEMVARA_RANKED: undefined,
+  MEMVARA_NAMED_SPEAKERS: undefined,
+}
 
 type Recorded = { method: string; args: unknown[] }
 
@@ -157,6 +176,40 @@ describe("MemvaraProvider", () => {
     expect(body.messages[0].ts).toBe("2024-01-01T00:00:00.000Z")
   })
 
+  test("ingest stores both named speakers as user turns with the name in front, under MEMVARA_NAMED_SPEAKERS=1", async () => {
+    await withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_NAMED_SPEAKERS: "1" }, async () => {
+      const { provider, calls } = await initialised({
+        addMemories: async () => ({
+          episode_ids: ["ep_a", "ep_b"],
+          added: [],
+          invalidated: [],
+          reinforced: [],
+          skipped: 0,
+          unextracted: 0,
+          llm_calls: 0,
+          latency_ms: 1,
+          deferred: false,
+          note: null,
+        }),
+      })
+      const s: UnifiedSession = {
+        sessionId: "s",
+        messages: [
+          { role: "user", content: "I went camping.", speaker: "Caroline" },
+          { role: "assistant", content: "I read Charlotte's Web.", speaker: "Melanie" },
+          { role: "assistant", content: "Congratulations." },
+        ],
+      }
+      await provider.ingest([s], { containerTag: "c" })
+      const body = calls.find((c) => c.method === "addMemories")!.args[1] as MemvaraAddRequest
+      expect(body.messages.map((m) => [m.role, m.content])).toEqual([
+        ["user", "Caroline: I went camping."],
+        ["user", "Melanie: I read Charlotte's Web."],
+        ["assistant", "Congratulations."],
+      ])
+    })
+  })
+
   test("ingest skips a session with no messages", async () => {
     const { provider, calls } = await initialised()
     const out = await provider.ingest([{ sessionId: "empty", messages: [] }], { containerTag: "c" })
@@ -181,77 +234,229 @@ describe("MemvaraProvider", () => {
   })
 
   test("search asks for 30 with episodes and no floor, and returns plain memory and turn objects in order", async () => {
-    const { provider, calls } = await initialised({
-      search: async () => ({
-        count: 2,
-        results: [
-          {
-            kind: "claim",
-            score: 0.61,
-            ranking: {},
-            memory: {
-              id: "cl_1",
-              text: "user lives in Lisbon",
-              subject: "user",
-              predicate: "lives_in",
-              object: "Lisbon",
-              memory_type: "semantic",
-              state: "live",
-              valid_time: { valid_from: "2023-05-20T02:21:00+00:00", valid_to: null },
-              transaction_time: { recorded_at: "2023-05-20T02:21:00+00:00", invalidated_at: null },
-              confidence: 1,
-              salience: 1,
-              source_ids: ["ep_a"],
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider, calls } = await initialised({
+        search: async () => ({
+          count: 2,
+          results: [
+            {
+              kind: "claim",
+              score: 0.61,
+              ranking: {},
+              memory: {
+                id: "cl_1",
+                text: "user lives in Lisbon",
+                subject: "user",
+                predicate: "lives_in",
+                object: "Lisbon",
+                memory_type: "semantic",
+                state: "live",
+                valid_time: { valid_from: "2023-05-20T02:21:00+00:00", valid_to: null },
+                transaction_time: {
+                  recorded_at: "2023-05-20T02:21:00+00:00",
+                  invalidated_at: null,
+                },
+                confidence: 1,
+                salience: 1,
+                source_ids: ["ep_a"],
+              },
             },
-          },
-          {
-            kind: "episode",
-            score: 0.44,
-            ranking: {},
-            episode: {
-              id: "ep_a",
-              role: "user",
-              ts: "2023-05-20T02:21:00+00:00",
-              content: "I moved to Lisbon last week!",
+            {
+              kind: "episode",
+              score: 0.44,
+              ranking: {},
+              episode: {
+                id: "ep_a",
+                role: "user",
+                ts: "2023-05-20T02:21:00+00:00",
+                content: "I moved to Lisbon last week!",
+              },
             },
+          ],
+        }),
+      })
+      const out = await provider.search("where do I live", {
+        containerTag: "q1-run7",
+        limit: 10,
+        threshold: 0.3,
+      })
+      const [user, body] = calls.find((c) => c.method === "search")!.args as [
+        string,
+        MemvaraSearchRequest,
+      ]
+      expect(user).toBe("q1-run7")
+      expect(body).toEqual({
+        query: "where do I live",
+        k: 30,
+        min_score: 0,
+        include_episodes: true,
+      })
+      expect(out).toEqual([
+        {
+          kind: "memory",
+          text: "user lives in Lisbon",
+          subject: "user",
+          predicate: "lives_in",
+          object: "Lisbon",
+          state: "live",
+          valid_from: "2023-05-20T02:21:00+00:00",
+          valid_to: null,
+          recorded_at: "2023-05-20T02:21:00+00:00",
+          invalidated_at: null,
+          score: 0.61,
+          sources: ["ep_a"],
+        },
+        {
+          kind: "turn",
+          role: "user",
+          content: "I moved to Lisbon last week!",
+          ts: "2023-05-20T02:21:00+00:00",
+          score: 0.44,
+        },
+      ])
+    })
+  })
+
+  test("carries a ranked hit's selected and span onto the turn, and drops an absent one rather than nulling it", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({
+          count: 2,
+          results: [
+            {
+              kind: "episode",
+              score: 0.44,
+              ranking: { selected: true, span: "moved to Lisbon" },
+              episode: {
+                id: "ep_a",
+                role: "user",
+                ts: "2023-05-20T02:21:00+00:00",
+                content: "I moved to Lisbon last week!",
+              },
+            },
+            {
+              kind: "episode",
+              score: 0.31,
+              ranking: { selected: false, span: null },
+              episode: {
+                id: "ep_b",
+                role: "assistant",
+                ts: "2023-05-20T02:22:00+00:00",
+                content: "Congratulations!",
+              },
+            },
+            {
+              kind: "episode",
+              score: 0.1,
+              episode: {
+                id: "ep_c",
+                role: "user",
+                ts: "2023-05-20T02:23:00+00:00",
+                content: "Thanks.",
+              },
+            },
+          ],
+        }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out).toEqual([
+        {
+          kind: "turn",
+          role: "user",
+          content: "I moved to Lisbon last week!",
+          ts: "2023-05-20T02:21:00+00:00",
+          score: 0.44,
+          selected: true,
+          span: "moved to Lisbon",
+        },
+        {
+          kind: "turn",
+          role: "assistant",
+          content: "Congratulations!",
+          ts: "2023-05-20T02:22:00+00:00",
+          score: 0.31,
+          selected: false,
+          span: null,
+        },
+        {
+          kind: "turn",
+          role: "user",
+          content: "Thanks.",
+          ts: "2023-05-20T02:23:00+00:00",
+          score: 0.1,
+        },
+      ])
+    })
+  })
+
+  test("appends a ranked response's selection as a trailing context item", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({
+          count: 1,
+          results: [
+            {
+              kind: "episode",
+              score: 0.44,
+              ranking: { selected: true, span: "moved to Lisbon" },
+              episode: {
+                id: "ep_a",
+                role: "user",
+                ts: "2023-05-20T02:21:00+00:00",
+                content: "I moved to Lisbon last week!",
+              },
+            },
+          ],
+          selection: { outcome: "applied", candidates: 40, kept: 1 },
+        }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out[out.length - 1]).toEqual({
+        kind: "selection",
+        outcome: "applied",
+        candidates: 40,
+        kept: 1,
+      })
+    })
+  })
+
+  test("carries a fallback's reason and status onto the selection item", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({
+          count: 0,
+          results: [],
+          selection: {
+            outcome: "fallback",
+            reason: "timeout",
+            status: null,
+            candidates: 0,
+            kept: 0,
           },
-        ],
-      }),
+        }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out).toEqual([
+        {
+          kind: "selection",
+          outcome: "fallback",
+          reason: "timeout",
+          status: null,
+          candidates: 0,
+          kept: 0,
+        },
+      ])
     })
-    const out = await provider.search("where do I live", {
-      containerTag: "q1-run7",
-      limit: 10,
-      threshold: 0.3,
+  })
+
+  test("adds no selection item to a plain search's context", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({ count: 0, results: [] }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out).toEqual([])
     })
-    const [user, body] = calls.find((c) => c.method === "search")!.args as [
-      string,
-      MemvaraSearchRequest,
-    ]
-    expect(user).toBe("q1-run7")
-    expect(body).toEqual({ query: "where do I live", k: 30, min_score: 0, include_episodes: true })
-    expect(out).toEqual([
-      {
-        kind: "memory",
-        text: "user lives in Lisbon",
-        subject: "user",
-        predicate: "lives_in",
-        object: "Lisbon",
-        state: "live",
-        valid_from: "2023-05-20T02:21:00+00:00",
-        valid_to: null,
-        recorded_at: "2023-05-20T02:21:00+00:00",
-        invalidated_at: null,
-        score: 0.61,
-        sources: ["ep_a"],
-      },
-      {
-        kind: "turn",
-        role: "user",
-        content: "I moved to Lisbon last week!",
-        ts: "2023-05-20T02:21:00+00:00",
-        score: 0.44,
-      },
-    ])
   })
 
   test("clear erases the user scope", async () => {
@@ -294,5 +499,138 @@ describe("registration", () => {
 
   test("getProviderConfig knows memvara", () => {
     expect(() => getProviderConfig("memvara")).not.toThrow()
+  })
+})
+
+describe("MEMVARA_SEARCH_K", () => {
+  const empty = { search: async () => ({ count: 0, results: [] }) }
+
+  async function kFor(value: string | undefined): Promise<number> {
+    return withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_SEARCH_K: value }, async () => {
+      const { provider, calls } = await initialised(empty)
+      await provider.search("q", { containerTag: "c" })
+      const body = calls.find((c) => c.method === "search")!.args[1] as MemvaraSearchRequest
+      return body.k
+    })
+  }
+
+  test("defaults to 30 when the variable is unset, empty or only whitespace", async () => {
+    expect(await kFor(undefined)).toBe(30)
+    expect(await kFor("")).toBe(30)
+    expect(await kFor(" ")).toBe(30)
+  })
+
+  test("asks for the number the variable names", async () => {
+    expect(await kFor("5")).toBe(5)
+    expect(await kFor("100")).toBe(100)
+  })
+
+  test("a value that is not a positive integer throws at initialize and names the variable", async () => {
+    // initialize resolves every knob for the log, so a typo stops the run before it has
+    // ingested anything rather than at the first question that happens to touch it.
+    for (const bad of ["0", "-1", "abc", "2.5"]) {
+      await withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_SEARCH_K: bad }, async () => {
+        await expect(initialised(empty)).rejects.toThrow(/MEMVARA_SEARCH_K/)
+      })
+    }
+  })
+
+  test("a value set after initialize still throws at the search that reads it", async () => {
+    // The knob is read at call time, not at import, which is what lets one run set it per
+    // arm -- and what makes the startup check a convenience rather than the only guard.
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised(empty)
+      process.env.MEMVARA_SEARCH_K = "abc"
+      await expect(provider.search("q", { containerTag: "c" })).rejects.toThrow(/MEMVARA_SEARCH_K/)
+    })
+  })
+})
+
+describe("MEMVARA_RANKED", () => {
+  const empty = { search: async () => ({ count: 0, results: [] }) }
+
+  async function bodyFor(value: string | undefined): Promise<MemvaraSearchRequest> {
+    return withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_RANKED: value }, async () => {
+      const { provider, calls } = await initialised(empty)
+      await provider.search("q", { containerTag: "c" })
+      return calls.find((c) => c.method === "search")!.args[1] as MemvaraSearchRequest
+    })
+  }
+
+  test("off by default: the search body is exactly what it was before this knob existed", async () => {
+    // Every arm judged so far ran this body. A ranked read has to be provably the same
+    // request plus one field, not a request that happens to produce the same JSON.
+    expect(await bodyFor(undefined)).toEqual({
+      query: "q",
+      k: 30,
+      min_score: 0,
+      include_episodes: true,
+    })
+    expect(await bodyFor("")).toEqual({ query: "q", k: 30, min_score: 0, include_episodes: true })
+  })
+
+  test("adds ranked: true and nothing else", async () => {
+    expect(await bodyFor("1")).toEqual({
+      query: "q",
+      k: 30,
+      min_score: 0,
+      include_episodes: true,
+      ranked: true,
+    })
+  })
+
+  test('a value that is not "1" throws at initialize and names the variable', async () => {
+    for (const bad of ["0", "true", "yes"]) {
+      await withEnvAsync({ ...ALL_KNOBS_OFF, MEMVARA_RANKED: bad }, async () => {
+        await expect(initialised(empty)).rejects.toThrow(/MEMVARA_RANKED/)
+      })
+    }
+  })
+
+  test("refuses at initialize a stack that also overrides context or role, since either would hide the server's ranked order", async () => {
+    await withEnvAsync(
+      { ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1", MEMVARA_CONTEXT_FILE: "/tmp/blocks.jsonl" },
+      async () => {
+        await expect(initialised(empty)).rejects.toThrow(/MEMVARA_RANKED/)
+      }
+    )
+    await withEnvAsync(
+      { ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1", MEMVARA_ROLE_SELECT: "route" },
+      async () => {
+        await expect(initialised(empty)).rejects.toThrow(/MEMVARA_RANKED/)
+      }
+    )
+  })
+})
+
+describe("the init log", () => {
+  test("carries every resolved knob, so an arm's configuration is in its own log", async () => {
+    const lines: string[] = []
+    const spy = spyOn(logger, "info").mockImplementation((message: string) => {
+      lines.push(message)
+    })
+    try {
+      await withEnvAsync(
+        {
+          ...ALL_KNOBS_OFF,
+          MEMVARA_SEARCH_K: "200",
+          MEMVARA_TURNS_ONLY: "1",
+          MEMVARA_ROLE_SELECT: "route",
+          MEMVARA_TOKEN_BUDGET: "720",
+        },
+        async () => {
+          await initialised()
+        }
+      )
+    } finally {
+      spy.mockRestore()
+    }
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain("Initialized memvara provider")
+    expect(lines[0]).toContain(
+      'settings {"turnsOnly":true,"roleSelect":"route","headWhole":0,"tailChars":0,' +
+        '"tokenBudget":720,"searchK":200,"answerPrompt":"v1","contextFile":null,"ranked":false,' +
+        '"namedSpeakers":false}'
+    )
   })
 })

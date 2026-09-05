@@ -45,6 +45,25 @@ describe("MemvaraClient", () => {
     })
   })
 
+  test("search returns the response's selection object, not only its results", async () => {
+    const selection = { outcome: "applied", candidates: 40, kept: 6 }
+    const f = fakeFetch([{ status: 200, body: { count: 0, results: [], selection } }])
+    const client = new MemvaraClient({
+      baseUrl: "http://api.test",
+      apiKey: "k1",
+      fetchImpl: f.impl,
+      sleep: noSleep,
+    })
+    const out = await client.search("q-1", {
+      query: "hello",
+      k: 30,
+      min_score: 0,
+      include_episodes: true,
+      ranked: true,
+    })
+    expect(out.selection).toEqual(selection)
+  })
+
   test("addMemories sends the idempotency key and the ts on the request", async () => {
     const receipt = {
       episode_ids: ["ep_1", "ep_2"],
