@@ -153,7 +153,7 @@ export function searchK(): number {
   return envInt("MEMVARA_SEARCH_K", 1) ?? DEFAULT_SEARCH_K
 }
 
-export type AnswerPrompt = "v1" | "v2"
+export type AnswerPrompt = "v1" | "v2" | "v3"
 
 /** MEMVARA_ANSWER_PROMPT chooses which answer prompt is built. "v1" is the shipped text,
  *  byte for byte. "v2" keeps every line of it and adds four lines: three reading rules and
@@ -168,10 +168,15 @@ export type AnswerPrompt = "v1" | "v2"
  *  stated preferences. The fourth line closes the gap where the reasoning names the right
  *  values and the answer is "I don't know" anyway.
  *
+ *  "v3" is v2 plus one more instruction, for LoCoMo's adversarial questions: the question
+ *  presumes something the excerpts do not support -- another person did the thing, or
+ *  nobody did -- and the reader answered about the nearest similar thing. Seven of the ten
+ *  adversarial misses on the named-speakers rerun had every excerpt in front of the reader.
+ *
  *  This is a prompt arm and nothing else: retrieval, selection, truncation and the budget
- *  are untouched, so the two prompts see exactly the same context block. */
+ *  are untouched, so the prompts see exactly the same context block. */
 export function answerPrompt(): AnswerPrompt {
-  return envEnum("MEMVARA_ANSWER_PROMPT", ["v1", "v2"] as const, "v1")
+  return envEnum("MEMVARA_ANSWER_PROMPT", ["v1", "v2", "v3"] as const, "v1")
 }
 
 /** MEMVARA_CONTEXT_FILE is a path to a JSONL file of context blocks rendered somewhere

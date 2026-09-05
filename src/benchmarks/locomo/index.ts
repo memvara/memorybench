@@ -66,11 +66,17 @@ export const LOCOMO_QUESTION_TYPES: QuestionTypeRegistry = {
   },
 }
 
-const CATEGORY_TO_TYPE: Record<number, string> = {
-  1: "single-hop",
-  2: "multi-hop",
-  3: "temporal",
-  4: "world-knowledge",
+// The dataset's own numbering, as `task_eval/evaluation.py` in snap-research/locomo
+// scores it: 1 is multi-hop (scored by splitting the answer into sub-answers), 2 temporal,
+// 3 open-domain (the commonsense/world-knowledge questions), 4 single-hop, 5 adversarial.
+// This map used to read 1 as single-hop and 3 as temporal, so every per-category number
+// the report printed was filed under the wrong name; a sample of the questions in each
+// number makes the real order plain ("When did ..." is 2, "Would X want ..." is 3).
+export const CATEGORY_TO_TYPE: Record<number, string> = {
+  1: "multi-hop",
+  2: "temporal",
+  3: "world-knowledge",
+  4: "single-hop",
   5: "adversarial",
 }
 

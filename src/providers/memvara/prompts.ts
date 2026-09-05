@@ -301,16 +301,29 @@ export const V2_CONTEXT_BULLETS: readonly string[] = [
 export const V2_INSTRUCTION =
   '- If your reasoning has already identified the values the answer needs, give the answer; say "I don\'t know" only when the excerpts contain nothing that bears on the question.'
 
+/** The one instruction v3 adds after V2_INSTRUCTION: a question can be built on a premise
+ *  the excerpts do not support -- it names one person where the excerpts show another
+ *  doing the thing, or an event that nobody in the excerpts had. Answering about the nearest
+ *  similar thing is a fabrication with a citation. */
+export const V3_INSTRUCTION =
+  "- Check the question's premise against the excerpts before answering. If the question attributes something to a person, event or object that the excerpts show belongs to a different one, or that no excerpt supports at all, say that the context does not contain it, and name what the excerpts do say instead. Do not answer about the nearest similar thing as if it were the one asked about."
+
 /** v1 is the shipped prompt byte for byte; v2 is that prompt with four lines inserted and
- *  nothing else moved. Both read the same rendered context. */
+ *  nothing else moved; v3 is v2 with one more instruction after the last. All read the same
+ *  rendered context. */
 export function buildMemvaraAnswerPrompt(
   question: string,
   context: unknown[],
   questionDate?: string
 ): string {
-  const v2 = answerPrompt() === "v2"
+  const variant = answerPrompt()
+  const v2 = variant !== "v1"
   const readingRules = v2 ? `\n${V2_CONTEXT_BULLETS.join("\n")}` : ""
-  const instruction = v2 ? `\n${V2_INSTRUCTION}` : ""
+  const instruction = !v2
+    ? ""
+    : variant === "v3"
+      ? `\n${V2_INSTRUCTION}\n${V3_INSTRUCTION}`
+      : `\n${V2_INSTRUCTION}`
   return `You are a question-answering system with access to a memory of past conversations with the user. Answer the question from the retrieved context below.
 
 Question: ${question}

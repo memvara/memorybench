@@ -235,7 +235,7 @@ describe("a value the knob does not accept throws and names the variable", () =>
     ["MEMVARA_TAIL_CHARS", ["80O", "-1", "1.5", "1e"]],
     ["MEMVARA_TOKEN_BUDGET", ["80O", "-1", "1.5", "1e"]],
     ["MEMVARA_SEARCH_K", ["80O", "-1", "1.5", "1e"]],
-    ["MEMVARA_ANSWER_PROMPT", ["v3", "V2", "v2 ", "2", "default"]],
+    ["MEMVARA_ANSWER_PROMPT", ["v4", "V2", "v2 ", "2", "default"]],
     ["MEMVARA_RANKED", ["0", "true", "yes"]],
   ]
 

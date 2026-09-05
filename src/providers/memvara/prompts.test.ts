@@ -12,6 +12,7 @@ import {
   TURNS_HEADER_CUT,
   V2_CONTEXT_BULLETS,
   V2_INSTRUCTION,
+  V3_INSTRUCTION,
 } from "./prompts"
 import { countO200k, countTokens } from "../../utils/tokens"
 import { DEFAULT_ANSWERING_MODEL, getModelConfig } from "../../utils/models"
@@ -219,6 +220,19 @@ describe("MEMVARA_ANSWER_PROMPT", () => {
     for (const line of ADDITIONS) {
       expect(v2.split(line).length - 1).toBe(1)
     }
+    expect(v2).not.toContain(V3_INSTRUCTION)
+  })
+
+  test("v3 is v2 with the premise check inserted right after v2's instruction", () => {
+    const v3 = build("v3")
+    expect(v3.split(V3_INSTRUCTION).length - 1).toBe(1)
+    expect(v3).toContain(`${V2_INSTRUCTION}\n${V3_INSTRUCTION}`)
+    expect(
+      v3
+        .split("\n")
+        .filter((line) => line !== V3_INSTRUCTION)
+        .join("\n")
+    ).toBe(build("v2"))
   })
 
   // The arms are compared against each other, so what v2 leaves alone matters as much as
@@ -263,8 +277,8 @@ describe("MEMVARA_ANSWER_PROMPT", () => {
     expect(build("v2")).toContain(`Retrieved context:\n${render}\n\nHow to read the context:`)
   })
 
-  test("a value that is neither v1 nor v2 throws and names the variable", () => {
-    for (const bad of ["v3", "V2", "v2 ", "2"]) {
+  test("a value that is none of v1, v2 or v3 throws and names the variable", () => {
+    for (const bad of ["v4", "V2", "v2 ", "2"]) {
       expect(() => build(bad)).toThrow(/MEMVARA_ANSWER_PROMPT/)
     }
   })
