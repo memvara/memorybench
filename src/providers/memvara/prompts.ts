@@ -46,7 +46,23 @@ export interface MemvaraContextTurn {
   span?: string | null
 }
 
-export type MemvaraContextItem = MemvaraContextMemory | MemvaraContextTurn
+/** A ranked search's own outcome, carried as one extra item in the context array rather
+ *  than on the turns themselves -- it describes the whole call, not any one hit, and an
+ *  `applied` call whose model kept nothing would otherwise leave no trace that it ran at
+ *  all. Absent on a plain (unranked) search. Nothing renders this kind: `isTurn`/`isMemory`
+ *  filter it out of the prompt the same way they ignore each other's kind, and it exists
+ *  so a caller such as the offline scoring script can read the outcome and the candidate
+ *  count off the checkpoint instead of inferring them from the per-turn `selected` field. */
+export interface MemvaraContextSelection {
+  kind: "selection"
+  outcome: string
+  reason?: string | null
+  status?: number | null
+  candidates: number
+  kept: number
+}
+
+export type MemvaraContextItem = MemvaraContextMemory | MemvaraContextTurn | MemvaraContextSelection
 
 function isMemory(x: unknown): x is MemvaraContextMemory {
   return typeof x === "object" && x !== null && (x as { kind?: unknown }).kind === "memory"

@@ -10,10 +10,10 @@ import type {
 import type { UnifiedSession } from "../../types/unified"
 import { logger } from "../../utils/logger"
 import { MemvaraClient } from "./client"
-import type { MemvaraHit, MemvaraMessage } from "./client"
+import type { MemvaraHit, MemvaraMessage, MemvaraSelection } from "./client"
 import { memvaraProviderSettings, ranked, searchK } from "./env"
 import { MEMVARA_PROMPTS } from "./prompts"
-import type { MemvaraContextItem } from "./prompts"
+import type { MemvaraContextItem, MemvaraContextSelection } from "./prompts"
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:58080"
 
@@ -122,7 +122,9 @@ export class MemvaraProvider implements Provider {
       include_episodes: true,
       ...(ranked() ? { ranked: true } : {}),
     })
-    return response.results.map(toContextItem)
+    const items: MemvaraContextItem[] = response.results.map(toContextItem)
+    if (response.selection) items.push(toSelectionItem(response.selection))
+    return items
   }
 
   async clear(containerTag: string): Promise<void> {
@@ -165,6 +167,19 @@ function toContextItem(hit: MemvaraHit): MemvaraContextItem {
     score: hit.score,
     ...(hit.ranking?.selected !== undefined ? { selected: hit.ranking.selected } : {}),
     ...(hit.ranking?.span !== undefined ? { span: hit.ranking.span } : {}),
+  }
+}
+
+/** The response's own outcome, carried into the context array as one extra item -- see
+ *  `MemvaraContextSelection`. */
+function toSelectionItem(s: MemvaraSelection): MemvaraContextSelection {
+  return {
+    kind: "selection",
+    outcome: s.outcome,
+    ...(s.reason !== undefined ? { reason: s.reason } : {}),
+    ...(s.status !== undefined ? { status: s.status } : {}),
+    candidates: s.candidates,
+    kept: s.kept,
   }
 }
 

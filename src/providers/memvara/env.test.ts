@@ -122,13 +122,49 @@ describe("MEMVARA_RANKED with a stack that would hide the server's ranked order"
     ).toThrow(/MEMVARA_RANKED/)
   })
 
-  test("MEMVARA_ROLE_SELECT and MEMVARA_CONTEXT_FILE are each fine on their own", () => {
+  test("throws when MEMVARA_TAIL_CHARS is also set", () => {
+    // MEMVARA_TAIL_CHARS truncates a turn by its position in the returned list, kept or
+    // not -- exactly what a ranked call promises never happens to a kept turn. MEMVARA_HEAD_WHOLE
+    // alone changes nothing (renderTurn only cuts when tailChars > 0), so it is not part of
+    // this guard.
+    expect(() =>
+      withEnv(
+        { ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1", MEMVARA_TAIL_CHARS: "400" },
+        memvaraProviderSettings
+      )
+    ).toThrow(/MEMVARA_RANKED/)
+    expect(() =>
+      withEnv(
+        {
+          ...ALL_KNOBS_OFF,
+          MEMVARA_RANKED: "1",
+          MEMVARA_HEAD_WHOLE: "5",
+          MEMVARA_TAIL_CHARS: "400",
+        },
+        memvaraProviderSettings
+      )
+    ).toThrow(/MEMVARA_RANKED/)
+  })
+
+  test("MEMVARA_ROLE_SELECT, MEMVARA_CONTEXT_FILE and MEMVARA_TAIL_CHARS are each fine on their own", () => {
     expect(() =>
       withEnv({ ...ALL_KNOBS_OFF, MEMVARA_ROLE_SELECT: "route" }, memvaraProviderSettings)
     ).not.toThrow()
     expect(() =>
       withEnv(
         { ...ALL_KNOBS_OFF, MEMVARA_CONTEXT_FILE: "/tmp/blocks.jsonl" },
+        memvaraProviderSettings
+      )
+    ).not.toThrow()
+    expect(() =>
+      withEnv({ ...ALL_KNOBS_OFF, MEMVARA_TAIL_CHARS: "400" }, memvaraProviderSettings)
+    ).not.toThrow()
+  })
+
+  test("MEMVARA_HEAD_WHOLE alone does not trip the guard, since it cuts nothing by itself", () => {
+    expect(() =>
+      withEnv(
+        { ...ALL_KNOBS_OFF, MEMVARA_RANKED: "1", MEMVARA_HEAD_WHOLE: "5" },
         memvaraProviderSettings
       )
     ).not.toThrow()

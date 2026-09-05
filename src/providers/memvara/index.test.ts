@@ -354,6 +354,76 @@ describe("MemvaraProvider", () => {
     })
   })
 
+  test("appends a ranked response's selection as a trailing context item", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({
+          count: 1,
+          results: [
+            {
+              kind: "episode",
+              score: 0.44,
+              ranking: { selected: true, span: "moved to Lisbon" },
+              episode: {
+                id: "ep_a",
+                role: "user",
+                ts: "2023-05-20T02:21:00+00:00",
+                content: "I moved to Lisbon last week!",
+              },
+            },
+          ],
+          selection: { outcome: "applied", candidates: 40, kept: 1 },
+        }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out[out.length - 1]).toEqual({
+        kind: "selection",
+        outcome: "applied",
+        candidates: 40,
+        kept: 1,
+      })
+    })
+  })
+
+  test("carries a fallback's reason and status onto the selection item", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({
+          count: 0,
+          results: [],
+          selection: {
+            outcome: "fallback",
+            reason: "timeout",
+            status: null,
+            candidates: 0,
+            kept: 0,
+          },
+        }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out).toEqual([
+        {
+          kind: "selection",
+          outcome: "fallback",
+          reason: "timeout",
+          status: null,
+          candidates: 0,
+          kept: 0,
+        },
+      ])
+    })
+  })
+
+  test("adds no selection item to a plain search's context", async () => {
+    await withEnvAsync(ALL_KNOBS_OFF, async () => {
+      const { provider } = await initialised({
+        search: async () => ({ count: 0, results: [] }),
+      })
+      const out = await provider.search("where do I live", { containerTag: "c" })
+      expect(out).toEqual([])
+    })
+  })
+
   test("clear erases the user scope", async () => {
     const { provider, calls } = await initialised({
       eraseUser: async () => ({

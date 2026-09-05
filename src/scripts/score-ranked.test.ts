@@ -129,16 +129,81 @@ describe("score", () => {
     expect(score(checkpoint, gold).sawRanking).toBe(false)
   })
 
-  test("a question with no gold turns, or no search results, does not count", () => {
+  test("selected: null is skipped, not counted as missed -- the selector never saw it", () => {
+    // MEMVARA_SEARCH_K past the selector's own top_n returns turns the selector never
+    // evaluated, `null` throughout. Counting them as "not kept" would score a population
+    // extract.py's ~40-candidate list never had.
+    const gold = new Map([["q1", new Set(["gold turn"])]])
     const checkpoint = checkpointOf({
-      abstention: { questionId: "abstention", results: [turn("anything", true)] },
+      q1: {
+        questionId: "q1",
+        results: [
+          turn("gold turn", false), // seen, not kept: counts
+          turn("gold turn past top_n", null), // never seen: does not count
+          turn("distractor past top_n", null), // never seen: does not count
+        ],
+      },
+    })
+    const result = score(checkpoint, gold)
+    expect(result.goldMissed).toBe(1)
+    expect(result.nonGoldMissed).toBe(0)
+    expect(result.nonGoldKept).toBe(0)
+  })
+
+  test("a run whose every turn is null was never evaluated: sawRanking stays false", () => {
+    // A served-unranked outcome (no key on file, the switch, or a fallback) reports
+    // `selected: null` on every item -- the same value a turn past `top_n` gets on an
+    // applied call. Neither should read as "this checkpoint has a real ranking to score".
+    const gold = new Map([["q1", new Set(["gold turn"])]])
+    const checkpoint = checkpointOf({
+      q1: { questionId: "q1", results: [turn("gold turn", null), turn("distractor", null)] },
+    })
+    const result = score(checkpoint, gold)
+    expect(result.sawRanking).toBe(false)
+    expect(result.goldMissed).toBe(0)
+    expect(result.nonGoldMissed).toBe(0)
+  })
+
+  test("gold matching collapses whitespace the way extract.py's norm() does", () => {
+    // The gold set is built by goldByQuestion, which normalizes has_answer text the same
+    // way -- so the entry here is what it would actually store for "the answer is\nLisbon".
+    const gold = new Map([["q1", new Set(["the answer is Lisbon"])]])
+    const checkpoint = checkpointOf({
+      q1: { questionId: "q1", results: [turn("the answer is\nLisbon", true)] },
+    })
+    expect(score(checkpoint, gold).goldKept).toBe(1)
+  })
+
+  test("goldByQuestion itself normalizes has_answer text the same way", () => {
+    const gold = goldByQuestion([
+      {
+        question_id: "q1",
+        haystack_sessions: [[{ content: "the answer is  \n Lisbon", has_answer: true }]],
+      },
+    ])
+    expect(gold.get("q1")).toEqual(new Set(["the answer is Lisbon"]))
+  })
+
+  test("an abstention question (no has_answer turns) still counts, as extract.py's does", () => {
+    // extract.py iterates every question, has_answer or not (`extract.py:24-27,94`): an
+    // abstention question's candidates are all non-gold by definition, and they belong in
+    // that denominator, not excluded from it. A question search never ran for does not
+    // count, since there is nothing to score for it either way.
+    const checkpoint = checkpointOf({
+      abstention: {
+        questionId: "abstention",
+        results: [turn("kept distractor", true), turn("missed distractor", false)],
+      },
       unsearched: { questionId: "unsearched" },
     })
     const gold = new Map([
       ["abstention", new Set<string>()],
       ["unsearched", new Set(["gold turn"])],
     ])
-    expect(score(checkpoint, gold).questionsScored).toBe(0)
+    const result = score(checkpoint, gold)
+    expect(result.questionsScored).toBe(1)
+    expect(result.nonGoldKept).toBe(1)
+    expect(result.nonGoldMissed).toBe(1)
   })
 
   test("a memory (claim) result is ignored: only turns are scored", () => {

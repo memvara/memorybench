@@ -68,11 +68,14 @@ export function turnsOnly(): boolean {
  *  model pick the turns that bear on the question instead of returning the cross-encoder's
  *  order as-is. Same off rule as MEMVARA_TURNS_ONLY: unset is off, only `"1"` turns it on.
  *
- *  Two other knobs would each hide the server's ranked order from the parity run this
- *  drives: MEMVARA_CONTEXT_FILE replaces the rendered block outright, and
- *  MEMVARA_ROLE_SELECT drops one role from the server's kept-first list after the fact.
- *  `memvaraProviderSettings` throws at startup if either is set alongside this one, rather
- *  than let a run silently measure something other than the ranked read. */
+ *  Three other knobs would each hide the server's ranked order from the parity run this
+ *  drives: MEMVARA_CONTEXT_FILE replaces the rendered block outright, MEMVARA_ROLE_SELECT
+ *  drops one role from the server's kept-first list after the fact, and MEMVARA_TAIL_CHARS
+ *  truncates a turn's text by its position in that list, kept or not -- the server's
+ *  contract is that a kept turn is rendered whole, and a rank-aware cut does not know which
+ *  turns are kept. `memvaraProviderSettings` throws at startup if any of the three is set
+ *  alongside this one, rather than let a run silently measure something other than the
+ *  ranked read. */
 export function ranked(): boolean {
   const raw = process.env.MEMVARA_RANKED
   if (raw === undefined || raw.trim() === "") return false
@@ -204,11 +207,15 @@ export function memvaraProviderSettings(): MemvaraSettings {
     contextFile: contextFile(),
     ranked: ranked(),
   }
-  if (settings.ranked && (settings.roleSelect !== "off" || settings.contextFile !== null)) {
+  if (
+    settings.ranked &&
+    (settings.roleSelect !== "off" || settings.contextFile !== null || settings.tailChars > 0)
+  ) {
     throw new Error(
-      "MEMVARA_RANKED=1 with MEMVARA_ROLE_SELECT or MEMVARA_CONTEXT_FILE set would measure " +
-        "something other than the server's ranked order: unset MEMVARA_ROLE_SELECT and " +
-        "MEMVARA_CONTEXT_FILE, or drop MEMVARA_RANKED."
+      "MEMVARA_RANKED=1 with MEMVARA_ROLE_SELECT, MEMVARA_CONTEXT_FILE or MEMVARA_TAIL_CHARS " +
+        "set would measure something other than the server's ranked order: unset " +
+        "MEMVARA_ROLE_SELECT, MEMVARA_CONTEXT_FILE and MEMVARA_TAIL_CHARS, or drop " +
+        "MEMVARA_RANKED."
     )
   }
   return settings

@@ -43,10 +43,27 @@ export interface MemvaraSearchRequest {
 
 /** What a ranked search adds to one episode hit: whether the model kept the turn, and the
  *  verbatim span it kept it for. Absent on a plain read and on a claim, since only turns
- *  reach the selector. */
+ *  reach the selector. `null` covers every turn the selector did not evaluate -- past
+ *  `top_n`, or the whole result when the call was served unranked -- as distinct from
+ *  `false`, which means the model saw the turn and did not keep it. */
 export interface MemvaraRanking {
   selected?: boolean | null
   span?: string | null
+}
+
+/** The outcome of a ranked search, carried on the response beside `results` rather than
+ *  on any one hit, so an empty result still says what happened. `outcome` is one of
+ *  `applied | fallback | unconfigured | disabled | key_rejected`; `reason` is set only for
+ *  a `fallback` (`timeout | error | provider | malformed`); `status` is the provider's
+ *  HTTP status, when there was one (`key_rejected`, and some `fallback`s). `candidates` is
+ *  how many turns were handed to the selector -- 0 on every outcome but `applied` -- and
+ *  `kept` is how many it named. Absent on a plain (unranked) search. */
+export interface MemvaraSelection {
+  outcome: string
+  reason?: string | null
+  status?: number | null
+  candidates: number
+  kept: number
 }
 
 export interface MemvaraMemory {
@@ -78,6 +95,7 @@ export type MemvaraHit =
 export interface MemvaraSearchResponse {
   count: number
   results: MemvaraHit[]
+  selection?: MemvaraSelection | null
 }
 
 export interface MemvaraWhoAmI {
